@@ -606,9 +606,12 @@ if st.button("Pobierz wysłane wiadomości"):
 
                 st.success(f"Pobrano wiadomości z wybranego zakresu godzin: {len(df)}")
 
-                st.subheader("Wiadomości z wybranego zakresu")
-                st.dataframe(df, use_container_width=True)
+                #st.subheader("Wiadomości z wybranego zakresu")
+                #st.dataframe(df, use_container_width=True)
 
+            with st.expander("Pokaż wiadomości z wybranego zakresu"):
+                st.dataframe(df, use_container_width=True)
+                
                 csv = df.to_csv(index=False).encode("utf-8-sig")
 
                 #st.download_button(
@@ -620,7 +623,10 @@ if st.button("Pobierz wysłane wiadomości"):
 
                 report_df = build_names_report(base_items, rows)
 
-                st.subheader("Raport zgodności z bazą nazw")
+                #st.subheader("Raport zgodności z bazą nazw")
+                #st.dataframe(report_df, use_container_width=True)
+
+            with st.expander("Pokaż raport zgodności z bazą nazw"):
                 st.dataframe(report_df, use_container_width=True)
 
                 ok_count = (report_df["Status"] == "OK").sum()
