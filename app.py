@@ -405,7 +405,7 @@ with login_col:
     login = st.text_input("Login do poczty o2", value="zdroje2023")
 
 with haslo_col:
-    haslo = st.text_input("Hasło do poczty o2", type="password", value="glupiehaslo")
+    haslo = st.text_input("Hasło do poczty o2", type="password")
 
 # Domyślne wartości godzin w stanie aplikacji
 if "start_time" not in st.session_state:
