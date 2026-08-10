@@ -507,7 +507,7 @@ if st.button("Pobierz wysłane wiadomości"):
                         progress.progress(idx / len(message_ids))
 
                         fetch_query = (
-                            b'(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)'
+                            '(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)'
                         )
 
                         status, msg_data = mail.fetch(num, fetch_query)
