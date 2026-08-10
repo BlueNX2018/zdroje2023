@@ -404,6 +404,8 @@ st.write(
     "i sprawdzanie bazy nazw z aliasami."
 )
 
+st.caption(f"Wersja aplikacji: {APP_VERSION}")
+
 base_items = load_base_names()
 st.info(f"Wczytano bazę nazw: {len(base_items)} pozycji.")
 
