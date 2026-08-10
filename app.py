@@ -25,16 +25,23 @@ def decode_mime_header(value):
     if not value:
         return ""
 
-    result = ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+
+    parts_decoded = []
 
     for part, encoding in decode_header(value):
         if isinstance(part, bytes):
-            result += part.decode(encoding or "utf-8", errors="replace")
+            try:
+                decoded_part = part.decode(encoding or "utf-8", errors="replace")
+            except Exception:
+                decoded_part = part.decode("utf-8", errors="replace")
         else:
-            result += part
+            decoded_part = str(part)
 
-    return result
+        parts_decoded.append(decoded_part)
 
+    return "".join(parts_decoded)
 
 def analyze_bodystructure(bodystructure_text):
     """
