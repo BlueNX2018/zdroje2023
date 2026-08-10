@@ -15,6 +15,8 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
+APP_VERSION = "2026-08-10-2255"
+
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
 MAILBOX = "Sent"
