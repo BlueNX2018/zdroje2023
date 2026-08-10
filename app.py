@@ -397,14 +397,32 @@ def set_evening_hours():
     st.session_state.end_time = time(22, 0)
 
 
-#st.title("Kontrola wysłanych wiadomości")
-st.subheader("Kontrola wysłanych wiadomości")
+title_col, version_col = st.columns([5, 1], vertical_alignment="bottom")
+
+with title_col:
+    st.subheader("Kontrola wysłanych wiadomości")
+
+with version_col:
+    st.markdown(
+        f"""
+        <div style="
+            text-align:right;
+            color:#777;
+            font-size:11px;
+            line-height:1;
+            padding-bottom:6px;
+            white-space:nowrap;
+        ">
+            v {APP_VERSION}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.write(
     "Pobieranie wiadomości z folderu wysłane, filtrowanie po godzinach "
     "i sprawdzanie bazy nazw z aliasami."
 )
-
-st.caption(f"Wersja aplikacji: {APP_VERSION}")
 
 base_items = load_base_names()
 st.info(f"Wczytano bazę nazw: {len(base_items)} pozycji.")
