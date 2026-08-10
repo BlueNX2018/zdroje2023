@@ -685,4 +685,4 @@ if st.button("Pobierz wysłane wiadomości"):
 
         except Exception as e:
             st.error("Wystąpił nieoczekiwany błąd.")
-            st.code(str(e))
+            st.exception(e)
