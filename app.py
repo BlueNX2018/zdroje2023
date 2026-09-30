@@ -2,6 +2,7 @@ import imaplib
 import email
 import re
 import unicodedata
+from collections import Counter
 from pathlib import Path
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
@@ -15,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch"
+APP_VERSION = "2026-09-30-imap-smartfetch-attachments"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -232,6 +233,66 @@ def analyze_bodystructure(bodystructure_text):
 def is_image_attachment(filename):
     filename = filename.lower()
     return filename.endswith((".jpg", ".jpeg", ".png", ".heic", ".webp"))
+
+
+def normalize_attachment_name(filename):
+    """
+    Normalizacja nazwy załącznika tylko do kontroli powtórzeń.
+    Nie pobiera plików ani nie analizuje zawartości zdjęć.
+    """
+    if not filename:
+        return ""
+
+    return str(filename).strip().casefold()
+
+
+def mark_duplicate_attachments(rows):
+    """
+    Oznacza wiadomości zawierające powtarzające się nazwy załączników.
+    Sprawdzamy wyłącznie nazwy plików odczytane z BODYSTRUCTURE, bez pobierania załączników.
+    """
+    attachment_counts = Counter()
+    attachment_display_names = {}
+
+    for row in rows:
+        for filename in row.get("_attachment_names", []):
+            clean_name = str(filename).strip()
+            key = normalize_attachment_name(clean_name)
+
+            if not key:
+                continue
+
+            attachment_counts[key] += 1
+            attachment_display_names.setdefault(key, clean_name)
+
+    duplicate_keys = {
+        key
+        for key, count in attachment_counts.items()
+        if count > 1
+    }
+
+    for row in rows:
+        duplicate_names = []
+
+        for filename in row.get("_attachment_names", []):
+            clean_name = str(filename).strip()
+            key = normalize_attachment_name(clean_name)
+
+            if key in duplicate_keys and clean_name not in duplicate_names:
+                duplicate_names.append(clean_name)
+
+        row["Powtórzony załącznik"] = "TAK" if duplicate_names else "NIE"
+        row["Powtórzone nazwy załączników"] = ", ".join(duplicate_names)
+
+    duplicate_rows = [
+        {
+            "Nazwa załącznika": attachment_display_names[key],
+            "Liczba wystąpień": attachment_counts[key],
+        }
+        for key in sorted(duplicate_keys, key=lambda item: attachment_display_names[item].casefold())
+    ]
+
+    return rows, pd.DataFrame(duplicate_rows)
 
 
 def normalize_text(text):
@@ -651,6 +712,7 @@ if st.button("Pobierz wysłane wiadomości"):
                 )
 
                 rows = []
+                duplicate_attachments_df = pd.DataFrame()
                 technical_debug_rows = []
                 skipped_by_date_or_time = 0
 
@@ -755,6 +817,7 @@ if st.button("Pobierz wysłane wiadomości"):
                             "Załącznik": "TAK" if has_attachment else "NIE",
                             "Zdjęcie": "TAK" if has_image else "NIE",
                             "Załączniki": ", ".join(attachments),
+                            "_attachment_names": attachments,
                             # "Liczba rozpoznanych nazw załączników": len(attachments),
                         })
 
@@ -778,7 +841,13 @@ if st.button("Pobierz wysłane wiadomości"):
             if not rows:
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
             else:
+                rows, duplicate_attachments_df = mark_duplicate_attachments(rows)
+
                 df = pd.DataFrame(rows)
+
+                if "_attachment_names" in df.columns:
+                    df = df.drop(columns=["_attachment_names"])
+
                 df.insert(0, "Lp.", range(1, len(df) + 1))
 
                 st.success(f"Pobrano wiadomości z wybranego zakresu godzin: {len(df)}")
@@ -838,6 +907,30 @@ if st.button("Pobierz wysłane wiadomości"):
                     <strong>Braki:</strong> {missing_text}
                 </div>
                 """, unsafe_allow_html=True)
+
+                if not duplicate_attachments_df.empty:
+                    duplicate_count = len(duplicate_attachments_df)
+                    st.markdown(f"""
+                    <div style="
+                        width:100%;
+                        box-sizing:border-box;
+                        background-color:#4A3218;
+                        color:#FFCF8A;
+                        padding:12px 14px;
+                        border-radius:6px;
+                        text-align:left;
+                        font-size:16px;
+                        font-weight:400;
+                        margin-top:6px;
+                        margin-bottom:10px;
+                    ">
+                        <strong>Powtórzone nazwy załączników:</strong> {duplicate_count}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    with st.expander("Pokaż powtarzające się nazwy załączników"):
+                        st.dataframe(duplicate_attachments_df, use_container_width=True)
+
 
                 with st.expander("Pokaż wiadomości z wybranego zakresu"):
                     st.dataframe(df, use_container_width=True)
