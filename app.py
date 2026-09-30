@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic7"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic8"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1241,6 +1241,12 @@ if pobierz_clicked:
                 if not debug_df.empty:
                     warning_items.append(f"problemy techniczne IMAP: {len(debug_df)}")
 
+                with st.expander("Wczytane wiadomości"):
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+                with st.expander("Raport zgodności"):
+                    st.dataframe(report_display_df, use_container_width=True, hide_index=True)
+
                 if warning_items:
                     warning_text = "; ".join(warning_items)
                     st.markdown(f"""
@@ -1254,21 +1260,15 @@ if pobierz_clicked:
                         text-align:left;
                         font-size:16px;
                         font-weight:400;
-                        margin-top:6px;
+                        margin-top:10px;
                         margin-bottom:10px;
                     ">
-                        <strong>Ostrzeżenia po analizie:</strong> {warning_text}
+                        <strong>Ostrzeżenia:</strong> {warning_text}
                     </div>
                     """, unsafe_allow_html=True)
 
-                    with st.expander("Pokaż ostrzeżenia po analizie"):
+                    with st.expander("Pokaż ostrzeżenia"):
                         st.dataframe(warning_df, use_container_width=True, hide_index=True)
-
-                with st.expander("Pokaż wiadomości z wybranego zakresu"):
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-
-                with st.expander("Pokaż raport zgodności z bazą nazw"):
-                    st.dataframe(report_display_df, use_container_width=True, hide_index=True)
 
 
         except imaplib.IMAP4.error as e:
