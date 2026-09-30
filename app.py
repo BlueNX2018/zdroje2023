@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic12"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic13"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -499,22 +499,85 @@ def mark_image_validity(rows):
     - wiadomość bez zdjęcia nie jest zaliczana jako prawidłowa,
     - trafia do ostrzeżeń jako brak zdjęcia.
     """
-    warning_rows = []
-
     for row in rows:
         has_image = str(row.get("Zdjęcie", "")).strip().upper() == "TAK"
 
         if has_image:
             row["_image_ok"] = "TAK"
+            row["_image_issue"] = ""
         else:
             row["_image_ok"] = "NIE"
-            warning_rows.append({
-                "Godzina": row.get("Godzina", ""),
-                "Temat": row.get("Temat", ""),
-                "Załączniki": row.get("Załączniki", ""),
-            })
+            row["_image_issue"] = "BRAK_ZDJECIA"
+            row["_image_supplemented"] = "NIE"
+            row["_image_supplement_time"] = ""
+            row["_image_supplement_subject"] = ""
 
-    return rows, pd.DataFrame(warning_rows)
+    return rows, build_image_warning_df(rows)
+
+
+
+def mark_image_supplements(rows):
+    """
+    Sprawdza, czy wiadomość bez zdjęcia została później uzupełniona
+    poprawną wiadomością ze zdjęciem dla tego samego tematu.
+    """
+    valid_image_rows_by_subject = {}
+
+    for row in rows:
+        if row.get("_image_ok") != "TAK":
+            continue
+
+        subject_key = normalize_text(row.get("Temat", ""))
+        if not subject_key:
+            continue
+
+        valid_image_rows_by_subject.setdefault(subject_key, []).append(row)
+
+    for subject_rows in valid_image_rows_by_subject.values():
+        subject_rows.sort(key=lambda item: str(item.get("Godzina", "")))
+
+    for row in rows:
+        if row.get("_image_ok") != "NIE":
+            continue
+
+        subject_key = normalize_text(row.get("Temat", ""))
+        original_time = str(row.get("Godzina", ""))
+        supplement_row = None
+
+        for candidate in valid_image_rows_by_subject.get(subject_key, []):
+            candidate_time = str(candidate.get("Godzina", ""))
+            if not original_time or not candidate_time or candidate_time > original_time:
+                supplement_row = candidate
+                break
+
+        if supplement_row:
+            row["_image_supplemented"] = "TAK"
+            row["_image_supplement_time"] = supplement_row.get("Godzina", "")
+            row["_image_supplement_subject"] = supplement_row.get("Temat", "")
+            supplement_row["_image_supplement_for"] = "TAK"
+            supplement_row["_image_supplemented_original_time"] = row.get("Godzina", "")
+
+    return rows, build_image_warning_df(rows)
+
+
+
+def build_image_warning_df(rows):
+    warning_rows = []
+
+    for row in rows:
+        if row.get("_image_ok") != "NIE":
+            continue
+
+        warning_rows.append({
+            "Godzina": row.get("Godzina", ""),
+            "Temat": row.get("Temat", ""),
+            "Załączniki": row.get("Załączniki", ""),
+            "Uzupełniono": row.get("_image_supplemented", "NIE"),
+            "Godzina uzupełnienia": row.get("_image_supplement_time", ""),
+            "Temat uzupełnienia": row.get("_image_supplement_subject", ""),
+        })
+
+    return pd.DataFrame(warning_rows)
 
 
 
@@ -605,18 +668,32 @@ def build_warning_summary_df(
             subject = str(row.get("Temat", "")).strip()
             base = format_occurrence_time_subject(row.get("Godzina", ""), subject)
             attachments = str(row.get("Załączniki", "")).strip()
+            supplemented = str(row.get("Uzupełniono", "")).strip().upper() == "TAK"
+            supplement_base = format_occurrence_time_subject(
+                row.get("Godzina uzupełnienia", ""),
+                row.get("Temat uzupełnienia", ""),
+            )
 
             occurrence_parts = []
             if base:
                 occurrence_parts.append(base)
             if attachments:
                 occurrence_parts.append(f"załączniki: {attachments}")
+            if supplemented and supplement_base:
+                occurrence_parts.append(f"uzupełniono: {supplement_base}")
+
+            if supplemented:
+                assessment = "Brak zdjęcia — uzupełniono"
+                notes = "Wiadomość bez zdjęcia została uzupełniona późniejszą wiadomością ze zdjęciem."
+            else:
+                assessment = "Brak zdjęcia"
+                notes = "Wiadomość bez zdjęcia. Brak późniejszej poprawnej wiadomości."
 
             warning_rows.append({
-                "Ocena": "Brak zdjęcia",
+                "Ocena": assessment,
                 "Element": subject or "Wiadomość bez zdjęcia",
                 "Wystąpienia": " — ".join(occurrence_parts),
-                "Uwagi": "Wiadomość nie zawiera załącznika graficznego i nie została zaliczona jako prawidłowa.",
+                "Uwagi": notes,
             })
 
     if debug_df is not None and not debug_df.empty:
@@ -925,6 +1002,81 @@ def style_report_status(row):
     return [""] * len(row)
 
 
+def make_message_row_styler(row_style_map):
+    def style_message_row(row):
+        status = row_style_map.get(row.name, "")
+
+        if status == "BRAK_ZDJECIA":
+            return ["background-color: #4A1F25; color: #FFB3B3"] * len(row)
+
+        if status == "UZUPELNIENIE_ZDJECIA":
+            return ["background-color: #1F3A28; color: #BFE8C7"] * len(row)
+
+        return [""] * len(row)
+
+    return style_message_row
+
+
+def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
+    tiles = []
+
+    if recipient_warning_df is not None and not recipient_warning_df.empty:
+        tiles.append({
+            "text": "Błędny adresat",
+            "bg": "#4A1F25",
+            "fg": "#FFB3B3",
+        })
+    else:
+        tiles.append({
+            "text": "Adresat zgodny",
+            "bg": "#164B2A",
+            "fg": "#7CFF9B",
+        })
+
+    if image_warning_df is not None and not image_warning_df.empty:
+        tiles.append({
+            "text": "Wykryto wiadomości bez zdjęcia",
+            "bg": "#4A1F25",
+            "fg": "#FFB3B3",
+        })
+
+        supplemented_count = (
+            image_warning_df.get("Uzupełniono", pd.Series(dtype=str))
+            .astype(str)
+            .str.upper()
+            .eq("TAK")
+            .sum()
+        )
+        if supplemented_count:
+            tiles.append({
+                "text": f"Brak zdjęcia uzupełniono: {supplemented_count}",
+                "bg": "#1F3A28",
+                "fg": "#BFE8C7",
+            })
+
+    if debug_df is not None and not debug_df.empty:
+        tiles.append({
+            "text": "Problemy IMAP",
+            "bg": "#4A3218",
+            "fg": "#FFCF8A",
+        })
+
+    tiles_html = "".join(
+        f"""
+        <div style="box-sizing:border-box; background-color:{tile['bg']}; color:{tile['fg']}; padding:8px 10px; border-radius:6px; text-align:center; font-size:14px; font-weight:400;">
+            {tile['text']}
+        </div>
+        """
+        for tile in tiles
+    )
+
+    st.markdown(f"""
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:6px; margin-bottom:10px;">
+        {tiles_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def set_morning_hours():
     st.session_state.start_time = time(4, 0)
     st.session_state.end_time = time(10, 0)
@@ -1214,9 +1366,17 @@ if pobierz_clicked:
                 recipient_valid_rows = [row for row in rows if row.get("_recipient_ok") != "NIE"]
                 recipient_valid_rows, image_warning_df = mark_image_validity(recipient_valid_rows)
                 valid_rows = [row for row in recipient_valid_rows if row.get("_image_ok") != "NIE"]
+                recipient_valid_rows, image_warning_df = mark_image_supplements(recipient_valid_rows)
 
                 valid_rows, duplicate_messages_df = mark_duplicate_messages(valid_rows)
                 valid_rows, duplicate_attachments_df = mark_duplicate_attachments(valid_rows)
+
+                message_row_style_map = {}
+                for row_index, row in enumerate(rows):
+                    if row.get("_image_ok") == "NIE":
+                        message_row_style_map[row_index] = "BRAK_ZDJECIA"
+                    elif row.get("_image_supplement_for") == "TAK":
+                        message_row_style_map[row_index] = "UZUPELNIENIE_ZDJECIA"
 
                 df = pd.DataFrame(rows)
 
@@ -1231,6 +1391,12 @@ if pobierz_clicked:
                     "_duplicate_message_key",
                     "_recipient_ok",
                     "_image_ok",
+                    "_image_issue",
+                    "_image_supplemented",
+                    "_image_supplement_time",
+                    "_image_supplement_subject",
+                    "_image_supplement_for",
+                    "_image_supplemented_original_time",
                 ]
 
                 df = df.drop(
@@ -1323,22 +1489,11 @@ if pobierz_clicked:
                 if not debug_df.empty:
                     warning_items.append(f"problemy techniczne IMAP: {len(debug_df)}")
 
-                with st.expander("Wczytane wiadomości"):
-                    if recipient_warning_df.empty:
-                        st.caption(f"Wszystkie wiadomości wysłano na adres: {expected_recipient}")
-                    else:
-                        st.warning(
-                            f"Adres podstawowy: {expected_recipient}. "
-                            "Wykryto wiadomości wysłane na inny adres — nie zostały zaliczone jako prawidłowe."
-                        )
-
-                    if not image_warning_df.empty:
-                        st.warning(
-                            "Wykryto wiadomości bez zdjęcia — nie zostały zaliczone jako prawidłowe."
-                        )
+                with st.expander(f"Wczytane wiadomości ({len(df)})"):
+                    render_status_tiles(recipient_warning_df, image_warning_df, debug_df)
 
                     st.dataframe(
-                        df,
+                        df.style.apply(make_message_row_styler(message_row_style_map), axis=1),
                         use_container_width=True,
                         hide_index=True,
                         column_config={
@@ -1351,7 +1506,7 @@ if pobierz_clicked:
                         },
                     )
 
-                with st.expander("Raport zgodności"):
+                with st.expander(f"Raport zgodności ({len(report_display_df)})"):
                     st.dataframe(
                         report_display_df.style.apply(style_report_status, axis=1),
                         use_container_width=True,
@@ -1365,8 +1520,7 @@ if pobierz_clicked:
                         },
                     )
 
-                if warning_items:
-                    warning_text = "; ".join(warning_items)
+                if not warning_df.empty:
                     st.markdown(f"""
                     <div style="
                         width:100%;
@@ -1385,7 +1539,7 @@ if pobierz_clicked:
                     </div>
                     """, unsafe_allow_html=True)
 
-                    with st.expander("Ostrzeżenia"):
+                    with st.expander(f"Ostrzeżenia ({len(warning_df)})"):
                         st.dataframe(
                             warning_df,
                             use_container_width=True,
