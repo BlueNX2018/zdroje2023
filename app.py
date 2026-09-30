@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-10-01-imap-sf-c18"
+APP_VERSION = "2026-10-01-imap-sf-c19"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1087,7 +1087,7 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
         )
 
 
-def render_info_bar(text, bg="#2B3038", fg="#D0D4DC"):
+def render_info_bar(text, bg="#173A5E", fg="#B7D9FF"):
     st.markdown(
         f"""
         <div style="
@@ -1095,14 +1095,14 @@ def render_info_bar(text, bg="#2B3038", fg="#D0D4DC"):
             width:100%;
             background-color:{bg};
             color:{fg};
-            padding:5px 10px;
+            padding:8px 10px;
             border-radius:6px;
             text-align:left;
             font-size:13px;
             font-weight:400;
             line-height:1.25;
-            margin-top:4px;
-            margin-bottom:8px;
+            margin-top:10px;
+            margin-bottom:10px;
         ">
             {text}
         </div>
@@ -1111,7 +1111,7 @@ def render_info_bar(text, bg="#2B3038", fg="#D0D4DC"):
     )
 
 
-def render_info_bar_placeholder(placeholder, text, bg="#2B3038", fg="#D0D4DC"):
+def render_info_bar_placeholder(placeholder, text, bg="#173A5E", fg="#B7D9FF"):
     placeholder.markdown(
         f"""
         <div style="
@@ -1119,14 +1119,14 @@ def render_info_bar_placeholder(placeholder, text, bg="#2B3038", fg="#D0D4DC"):
             width:100%;
             background-color:{bg};
             color:{fg};
-            padding:5px 10px;
+            padding:8px 10px;
             border-radius:6px;
             text-align:left;
             font-size:13px;
             font-weight:400;
             line-height:1.25;
-            margin-top:4px;
-            margin-bottom:8px;
+            margin-top:10px;
+            margin-bottom:10px;
         ">
             {text}
         </div>
