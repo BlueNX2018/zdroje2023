@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic14"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic15"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -714,7 +714,7 @@ def build_warning_summary_df(
         return pd.DataFrame()
 
     warning_df = pd.DataFrame(warning_rows)
-    warning_df.insert(0, "Lp.", range(1, len(warning_df) + 1))
+    warning_df.insert(0, "#", range(1, len(warning_df) + 1))
     return warning_df
 
 
@@ -1006,7 +1006,7 @@ def make_message_row_styler(row_style_map):
     def style_message_row(row):
         status = row_style_map.get(row.name, "")
 
-        if status == "BRAK_ZDJECIA":
+        if status in ("BRAK_ZDJECIA", "BLEDNY_ADRESAT"):
             return ["background-color: #4A1F25; color: #FFB3B3"] * len(row)
 
         if status == "UZUPELNIENIE_ZDJECIA":
@@ -1022,7 +1022,7 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
 
     if recipient_warning_df is not None and not recipient_warning_df.empty:
         tiles.append({
-            "text": "Błędny adresat",
+            "text": f"Błędny adresat: {len(recipient_warning_df)}",
             "bg": "#4A1F25",
             "fg": "#FFB3B3",
         })
@@ -1035,7 +1035,7 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
 
     if image_warning_df is not None and not image_warning_df.empty:
         tiles.append({
-            "text": "Wykryto wiadomości bez zdjęcia",
+            "text": f"Wiadomości bez zdjęcia: {len(image_warning_df)}",
             "bg": "#4A1F25",
             "fg": "#FFB3B3",
         })
@@ -1049,7 +1049,7 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
         )
         if supplemented_count:
             tiles.append({
-                "text": f"Brak zdjęcia uzupełniono: {supplemented_count}",
+                "text": f"Uzupełniono brak zdjęcia: {supplemented_count}",
                 "bg": "#1F3A28",
                 "fg": "#BFE8C7",
             })
@@ -1382,7 +1382,9 @@ if pobierz_clicked:
 
                 message_row_style_map = {}
                 for row_index, row in enumerate(rows):
-                    if row.get("_image_ok") == "NIE":
+                    if row.get("_recipient_ok") == "NIE":
+                        message_row_style_map[row_index] = "BLEDNY_ADRESAT"
+                    elif row.get("_image_ok") == "NIE":
                         message_row_style_map[row_index] = "BRAK_ZDJECIA"
                     elif row.get("_image_supplement_for") == "TAK":
                         message_row_style_map[row_index] = "UZUPELNIENIE_ZDJECIA"
@@ -1412,7 +1414,7 @@ if pobierz_clicked:
                     columns=[col for col in columns_to_hide_in_messages if col in df.columns]
                 )
 
-                df.insert(0, "Lp.", range(1, len(df) + 1))
+                df.insert(0, "#", range(1, len(df) + 1))
 
 
                 report_df = build_names_report(base_items, valid_rows)
@@ -1421,14 +1423,22 @@ if pobierz_clicked:
                     "Lp.",
                     "Status",
                     "Nazwa wymagana",
-                    "Alias",
+                    "Dopasowano przez",
                     "Uwagi",
                 ]
 
                 report_display_df = report_df[report_display_columns].copy()
                 report_display_df = report_display_df.rename(
-                    columns={"Nazwa wymagana": "Pozycja z bazy"}
+                    columns={
+                        "Lp.": "#",
+                        "Nazwa wymagana": "Oczekiwano",
+                        "Dopasowano przez": "Znaleziono",
+                    }
                 )
+                report_display_df.loc[
+                    report_display_df["Status"].astype(str).eq("BRAK"),
+                    "Znaleziono"
+                ] = ""
 
                 ok_count = (report_df["Status"] == "OK").sum()
                 ok_alias_count = (report_df["Status"] == "OK alias").sum()
@@ -1452,24 +1462,24 @@ if pobierz_clicked:
                 <div style="width:100%; margin-top:10px; margin-bottom:10px; font-size:16px; font-weight:400;">
                     <div style="display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); width:100%; gap:6px; margin-bottom:6px;">
                         <div style="box-sizing:border-box; background-color:#173A5E; color:#B8DCFF; padding:10px 12px; border-radius:6px; text-align:center;">
-                            Łącznie: {total_count}
+                            Łącznie zdrojów: {total_count}
                         </div>
                         <div style="box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
-                            OK: {ok_count}
+                            Znaleziono nazwę: {ok_count}
                         </div>
                         <div style="box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
-                            OK alias: {ok_alias_count}
+                            Znaleziono alias: {ok_alias_count}
                         </div>
                         <div style="box-sizing:border-box; background-color:#4A3218; color:#FFCF8A; padding:10px 12px; border-radius:6px; text-align:center;">
-                            OK z błędem: {ok_error_count}
+                            Znaleziono z błędem: {ok_error_count}
                         </div>
                         <div style="box-sizing:border-box; background-color:#2B3038; color:#D0D4DC; padding:10px 12px; border-radius:6px; text-align:center;">
-                            DO WERYFIKACJI: {review_count}
+                            Do weryfikacji: {review_count}
                         </div>
                     </div>
                     <div style="display:flex; width:100%; gap:6px;">
                         <div style="flex:0 0 calc((100% - 24px) / 5); box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 12px; border-radius:6px; text-align:center;">
-                            BRAK: {missing_count}
+                            Brak: {missing_count}
                         </div>
                         <div style="flex:1 1 auto; min-width:0; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 14px; border-radius:6px; text-align:left;">
                             <strong>Braki:</strong> {missing_text}
@@ -1506,7 +1516,7 @@ if pobierz_clicked:
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                            "#": st.column_config.NumberColumn("#", width="small"),
                             "Data": st.column_config.TextColumn("Data", width="small"),
                             "Godzina": st.column_config.TextColumn("Godzina", width="small"),
                             "Temat": st.column_config.TextColumn("Temat", width="large"),
@@ -1521,10 +1531,10 @@ if pobierz_clicked:
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                            "#": st.column_config.NumberColumn("#", width="small"),
                             "Status": st.column_config.TextColumn("Status", width="small"),
-                            "Pozycja z bazy": st.column_config.TextColumn("Pozycja z bazy", width="large"),
-                            "Alias": st.column_config.TextColumn("Alias", width="large"),
+                            "Oczekiwano": st.column_config.TextColumn("Oczekiwano", width="large"),
+                            "Znaleziono": st.column_config.TextColumn("Znaleziono", width="medium"),
                             "Uwagi": st.column_config.TextColumn("Uwagi", width="large"),
                         },
                     )
@@ -1554,7 +1564,7 @@ if pobierz_clicked:
                             use_container_width=True,
                             hide_index=True,
                             column_config={
-                                "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                                "#": st.column_config.NumberColumn("#", width="small"),
                                 "Ocena": st.column_config.TextColumn("Ocena", width="medium"),
                                 "Element": st.column_config.TextColumn("Element", width="large"),
                                 "Wystąpienia": st.column_config.TextColumn("Wystąpienia", width="large"),
