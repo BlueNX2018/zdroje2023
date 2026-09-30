@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic2"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic5"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -251,17 +251,15 @@ def mark_duplicate_attachments(rows):
     Oznacza wiadomości zawierające powtarzające się nazwy załączników.
     Sprawdzamy wyłącznie nazwy plików odczytane z BODYSTRUCTURE, bez pobierania załączników.
 
-    Dodatkowo tworzy tabelę szczegółową: nazwa załącznika, liczba wystąpień,
-    godziny wysłania oraz tematy wiadomości, w których dana nazwa wystąpiła.
-    Dzięki temu łatwiej rozróżnić:
-    - powtórnie wysłaną tę samą wiadomość,
-    - pomyłkowe dołączenie tego samego pliku do innej wiadomości.
+    Jeżeli powtórzenie nazwy załącznika wynika wyłącznie z tego, że ta sama
+    wiadomość została wysłana drugi raz, nie pokazujemy osobnego ostrzeżenia
+    o załączniku. Taki przypadek jest już opisany jako „Duplikat wiadomości”.
     """
     attachment_counts = Counter()
     attachment_display_names = {}
     attachment_occurrences = {}
 
-    for row in rows:
+    for row_index, row in enumerate(rows):
         for filename in row.get("_attachment_names", []):
             clean_name = str(filename).strip()
             key = normalize_attachment_name(clean_name)
@@ -273,16 +271,42 @@ def mark_duplicate_attachments(rows):
             attachment_display_names.setdefault(key, clean_name)
 
             occurrence = {
+                "RowIndex": row_index,
                 "Godzina": row.get("Godzina", ""),
                 "Temat": row.get("Temat", ""),
+                "DuplicateMessageKey": row.get("_duplicate_message_key", ""),
             }
             attachment_occurrences.setdefault(key, []).append(occurrence)
 
-    duplicate_keys = {
+    repeated_keys = {
         key
         for key, count in attachment_counts.items()
         if count > 1
     }
+
+    actionable_duplicate_keys = set()
+
+    for key in repeated_keys:
+        occurrences = attachment_occurrences.get(key, [])
+        duplicate_message_keys = {
+            str(occurrence.get("DuplicateMessageKey", "")).strip()
+            for occurrence in occurrences
+            if str(occurrence.get("DuplicateMessageKey", "")).strip()
+        }
+
+        # Jeżeli wszystkie wystąpienia tej samej nazwy załącznika należą do jednej
+        # grupy duplikatu wiadomości, to powtórzenie załącznika jest skutkiem
+        # duplikatu wiadomości. Nie pokazujemy wtedy osobnego ostrzeżenia.
+        caused_only_by_message_duplicate = (
+            len(duplicate_message_keys) == 1
+            and all(
+                str(occurrence.get("DuplicateMessageKey", "")).strip() in duplicate_message_keys
+                for occurrence in occurrences
+            )
+        )
+
+        if not caused_only_by_message_duplicate:
+            actionable_duplicate_keys.add(key)
 
     for row in rows:
         duplicate_names = []
@@ -291,7 +315,7 @@ def mark_duplicate_attachments(rows):
             clean_name = str(filename).strip()
             key = normalize_attachment_name(clean_name)
 
-            if key in duplicate_keys and clean_name not in duplicate_names:
+            if key in actionable_duplicate_keys and clean_name not in duplicate_names:
                 duplicate_names.append(clean_name)
 
         row["Powtórzony załącznik"] = "TAK" if duplicate_names else "NIE"
@@ -299,7 +323,7 @@ def mark_duplicate_attachments(rows):
 
     duplicate_rows = []
 
-    for key in sorted(duplicate_keys, key=lambda item: attachment_display_names[item].casefold()):
+    for key in sorted(actionable_duplicate_keys, key=lambda item: attachment_display_names[item].casefold()):
         occurrences = attachment_occurrences.get(key, [])
 
         hours = []
@@ -394,9 +418,11 @@ def mark_duplicate_messages(rows):
         if key in duplicate_keys:
             row["Podejrzenie duplikatu wiadomości"] = "TAK"
             row["Grupa duplikatu"] = row.get("Temat", "") or row.get("Załączniki", "")
+            row["_duplicate_message_key"] = key
         else:
             row["Podejrzenie duplikatu wiadomości"] = "NIE"
             row["Grupa duplikatu"] = ""
+            row["_duplicate_message_key"] = ""
 
     duplicate_rows = []
 
@@ -922,172 +948,193 @@ with col5:
     )
 
 
-if st.button("Pobierz wysłane wiadomości"):
+button_col, loading_col = st.columns([1.4, 4], vertical_alignment="center")
+
+with button_col:
+    pobierz_clicked = st.button("Pobierz wysłane wiadomości", use_container_width=True)
+
+with loading_col:
+    loading_placeholder = st.empty()
+
+if pobierz_clicked:
     if not login or not haslo:
         st.warning("Podaj login i hasło.")
     elif start_time > end_time:
         st.error("Godzina początkowa nie może być późniejsza niż godzina końcowa.")
     else:
         try:
+            loading_placeholder.markdown(
+                """
+                <div style="
+                    color:#D0D4DC;
+                    font-size:14px;
+                    padding:8px 0 0 2px;
+                    line-height:1.4;
+                ">
+                    Łączenie z o2 i pobieranie wiadomości...
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
             progress_placeholder = st.empty()
             status_placeholder = st.empty()
 
-            with st.spinner("Łączenie z o2 i pobieranie wiadomości..."):
-                mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
-                mail.login(login, haslo)
+            mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+            mail.login(login, haslo)
 
-                status, _ = mail.select(MAILBOX, readonly=True)
+            status, _ = mail.select(MAILBOX, readonly=True)
 
-                if status != "OK":
-                    st.error(f"Nie udało się otworzyć folderu: {MAILBOX}")
-                    mail.logout()
-                    st.stop()
+            if status != "OK":
+                st.error(f"Nie udało się otworzyć folderu: {MAILBOX}")
+                mail.logout()
+                st.stop()
 
-                search_from = selected_date - timedelta(days=1)
-                search_to = selected_date + timedelta(days=2)
+            search_from = selected_date - timedelta(days=1)
+            search_to = selected_date + timedelta(days=2)
 
-                imap_from = format_imap_date(search_from)
-                imap_to = format_imap_date(search_to)
+            imap_from = format_imap_date(search_from)
+            imap_to = format_imap_date(search_to)
 
-                search_query = f'(SINCE {imap_from} BEFORE {imap_to})'
-                status, data = mail.uid("SEARCH", None, search_query)
+            search_query = f'(SINCE {imap_from} BEFORE {imap_to})'
+            status, data = mail.uid("SEARCH", None, search_query)
 
-                if status != "OK":
-                    st.error("Nie udało się wyszukać wiadomości.")
-                    mail.logout()
-                    st.stop()
+            if status != "OK":
+                st.error("Nie udało się wyszukać wiadomości.")
+                mail.logout()
+                st.stop()
 
-                message_ids = data[0].split()
+            message_ids = data[0].split()
 
-                rows = []
-                duplicate_attachments_df = pd.DataFrame()
-                duplicate_messages_df = pd.DataFrame()
-                technical_debug_rows = []
-                skipped_by_date_or_time = 0
+            rows = []
+            duplicate_attachments_df = pd.DataFrame()
+            duplicate_messages_df = pd.DataFrame()
+            technical_debug_rows = []
+            skipped_by_date_or_time = 0
 
-                if message_ids:
-                    progress = progress_placeholder.progress(0)
+            if message_ids:
+                progress = progress_placeholder.progress(0)
 
-                    status_placeholder.info(
-                        f"Wyszukuję wiadomości z dnia {selected_date} "
-                        f"w godzinach od {start_time.strftime('%H:%M')} do {end_time.strftime('%H:%M')}. "
-                        f"Znalazłem {len(message_ids)} wiadomości. Analizuję."
-                    )
+                status_placeholder.info(
+                    f"Wyszukuję wiadomości z dnia {selected_date} "
+                    f"w godzinach od {start_time.strftime('%H:%M')} do {end_time.strftime('%H:%M')}. "
+                    f"Znalazłem {len(message_ids)} wiadomości. Analizuję."
+                )
 
-                    for idx, uid in enumerate(message_ids, start=1):
-                        progress.progress(idx / len(message_ids))
+                for idx, uid in enumerate(message_ids, start=1):
+                    progress.progress(idx / len(message_ids))
 
-                        uid_text = bytes_to_text(uid)
+                    uid_text = bytes_to_text(uid)
 
-                        header_bytes, fetch_status, fetch_method, fetch_error = fetch_header_attempts(mail, uid)
+                    header_bytes, fetch_status, fetch_method, fetch_error = fetch_header_attempts(mail, uid)
 
-                        if not header_bytes:
-                            header_bytes, fetch_status, fetch_method, fetch_error = fetch_header_with_reconnect(
-                                uid,
-                                login,
-                                haslo,
-                            )
-
-                        if not header_bytes:
-                            technical_debug_rows.append({
-                                "UID": uid_text,
-                                "Status FETCH": fetch_status,
-                                "Metoda": fetch_method,
-                                "Problem": fetch_error,
-                                "Decyzja": "Pominięto: wiadomość nieodczytana przez IMAP",
-                            })
-                            continue
-
-                        msg = email.message_from_bytes(header_bytes)
-
-                        subject = decode_mime_header(msg.get("Subject", ""))
-                        sender = decode_mime_header(msg.get("From", ""))
-                        recipients = decode_mime_header(msg.get("To", ""))
-                        date_raw = msg.get("Date", "")
-
-                        try:
-                            dt = parsedate_to_datetime(date_raw)
-
-                            warsaw_tz = ZoneInfo("Europe/Warsaw")
-
-                            if dt.tzinfo is not None:
-                                dt_local = dt.astimezone(warsaw_tz)
-                            else:
-                                dt_local = dt.replace(tzinfo=warsaw_tz)
-
-                            msg_date = dt_local.date()
-                            msg_time = dt_local.time().replace(microsecond=0)
-
-                        except Exception:
-                            technical_debug_rows.append({
-                                "UID": uid_text,
-                                "Status FETCH": fetch_status,
-                                "Metoda": fetch_method,
-                                "Problem": f"Nie udało się odczytać daty z nagłówka: {date_raw}",
-                                "Decyzja": "Pominięto: brak poprawnej daty/godziny",
-                            })
-                            continue
-
-                        if msg_date != selected_date:
-                            skipped_by_date_or_time += 1
-                            continue
-
-                        in_range = start_time <= msg_time <= end_time
-
-                        if not in_range:
-                            skipped_by_date_or_time += 1
-                            continue
-
-                        bodystructure_text, body_status, body_error = fetch_bodystructure(mail, uid)
-
-                        if body_status != "OK":
-                            technical_debug_rows.append({
-                                "UID": uid_text,
-                                "Status FETCH": body_status,
-                                "Metoda": "BODYSTRUCTURE",
-                                "Problem": body_error or "nie udało się pobrać BODYSTRUCTURE",
-                                "Decyzja": "Wiadomość dodana, ale bez danych o załącznikach",
-                            })
-
-                        attachments, has_attachment, has_image = analyze_bodystructure(
-                            bodystructure_text
+                    if not header_bytes:
+                        header_bytes, fetch_status, fetch_method, fetch_error = fetch_header_with_reconnect(
+                            uid,
+                            login,
+                            haslo,
                         )
 
-                        image_attachments = [
-                            a for a in attachments if is_image_attachment(a)
-                        ]
+                    if not header_bytes:
+                        technical_debug_rows.append({
+                            "UID": uid_text,
+                            "Status FETCH": fetch_status,
+                            "Metoda": fetch_method,
+                            "Problem": fetch_error,
+                            "Decyzja": "Pominięto: wiadomość nieodczytana przez IMAP",
+                        })
+                        continue
 
-                        if image_attachments:
-                            has_image = True
+                    msg = email.message_from_bytes(header_bytes)
 
-                        if attachments:
-                            has_attachment = True
+                    subject = decode_mime_header(msg.get("Subject", ""))
+                    sender = decode_mime_header(msg.get("From", ""))
+                    recipients = decode_mime_header(msg.get("To", ""))
+                    date_raw = msg.get("Date", "")
 
-                        rows.append({
-                            "Data": str(msg_date) if msg_date else "",
-                            "Godzina": str(msg_time) if msg_time else "",
-                            # "Od": sender,
-                            "Do": recipients,
-                            "Temat": subject,
-                            "Załącznik": "TAK" if has_attachment else "NIE",
-                            "Zdjęcie": "TAK" if has_image else "NIE",
-                            "Załączniki": ", ".join(attachments),
-                            "_attachment_names": attachments,
-                            # "Liczba rozpoznanych nazw załączników": len(attachments),
+                    try:
+                        dt = parsedate_to_datetime(date_raw)
+
+                        warsaw_tz = ZoneInfo("Europe/Warsaw")
+
+                        if dt.tzinfo is not None:
+                            dt_local = dt.astimezone(warsaw_tz)
+                        else:
+                            dt_local = dt.replace(tzinfo=warsaw_tz)
+
+                        msg_date = dt_local.date()
+                        msg_time = dt_local.time().replace(microsecond=0)
+
+                    except Exception:
+                        technical_debug_rows.append({
+                            "UID": uid_text,
+                            "Status FETCH": fetch_status,
+                            "Metoda": fetch_method,
+                            "Problem": f"Nie udało się odczytać daty z nagłówka: {date_raw}",
+                            "Decyzja": "Pominięto: brak poprawnej daty/godziny",
+                        })
+                        continue
+
+                    if msg_date != selected_date:
+                        skipped_by_date_or_time += 1
+                        continue
+
+                    in_range = start_time <= msg_time <= end_time
+
+                    if not in_range:
+                        skipped_by_date_or_time += 1
+                        continue
+
+                    bodystructure_text, body_status, body_error = fetch_bodystructure(mail, uid)
+
+                    if body_status != "OK":
+                        technical_debug_rows.append({
+                            "UID": uid_text,
+                            "Status FETCH": body_status,
+                            "Metoda": "BODYSTRUCTURE",
+                            "Problem": body_error or "nie udało się pobrać BODYSTRUCTURE",
+                            "Decyzja": "Wiadomość dodana, ale bez danych o załącznikach",
                         })
 
-                debug_df = pd.DataFrame(technical_debug_rows) if technical_debug_rows else pd.DataFrame()
+                    attachments, has_attachment, has_image = analyze_bodystructure(
+                        bodystructure_text
+                    )
 
-                status_placeholder.empty()
-                progress_placeholder.empty()
+                    image_attachments = [
+                        a for a in attachments if is_image_attachment(a)
+                    ]
 
-                mail.logout()
+                    if image_attachments:
+                        has_image = True
 
+                    if attachments:
+                        has_attachment = True
+
+                    rows.append({
+                        "Data": str(msg_date) if msg_date else "",
+                        "Godzina": str(msg_time) if msg_time else "",
+                        # "Od": sender,
+                        "Do": recipients,
+                        "Temat": subject,
+                        "Załącznik": "TAK" if has_attachment else "NIE",
+                        "Zdjęcie": "TAK" if has_image else "NIE",
+                        "Załączniki": ", ".join(attachments),
+                        "_attachment_names": attachments,
+                        # "Liczba rozpoznanych nazw załączników": len(attachments),
+                    })
+
+            debug_df = pd.DataFrame(technical_debug_rows) if technical_debug_rows else pd.DataFrame()
+
+            status_placeholder.empty()
+            progress_placeholder.empty()
+            loading_placeholder.empty()
+
+            mail.logout()
             if not rows:
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
             else:
-                rows, duplicate_attachments_df = mark_duplicate_attachments(rows)
                 rows, duplicate_messages_df = mark_duplicate_messages(rows)
+                rows, duplicate_attachments_df = mark_duplicate_attachments(rows)
 
                 df = pd.DataFrame(rows)
 
@@ -1097,6 +1144,7 @@ if st.button("Pobierz wysłane wiadomości"):
                     "Powtórzone nazwy załączników",
                     "Podejrzenie duplikatu wiadomości",
                     "Grupa duplikatu",
+                    "_duplicate_message_key",
                 ]
 
                 df = df.drop(
@@ -1108,6 +1156,27 @@ if st.button("Pobierz wysłane wiadomości"):
                 st.success(f"Pobrano wiadomości z wybranego zakresu godzin: {len(df)}")
 
                 report_df = build_names_report(base_items, rows)
+
+                report_display_columns = [
+                    "Lp.",
+                    "Nazwa wymagana",
+                    "Alias",
+                    "Status",
+                    "Podobieństwo",
+                    "Godzina",
+                    "Dopasowano przez",
+                    "Uwagi",
+                ]
+
+                report_display_df = report_df[report_display_columns].copy()
+                report_display_df = report_display_df.rename(
+                    columns={"Nazwa wymagana": "Pozycja z bazy"}
+                )
+
+                attention_statuses = ["OK z błędem", "DO WERYFIKACJI", "BRAK"]
+                attention_report_df = report_display_df[
+                    report_display_df["Status"].isin(attention_statuses)
+                ].copy()
 
                 ok_count = (report_df["Status"] == "OK").sum()
                 ok_alias_count = (report_df["Status"] == "OK alias").sum()
@@ -1207,8 +1276,12 @@ if st.button("Pobierz wysłane wiadomości"):
                 with st.expander("Pokaż wiadomości z wybranego zakresu"):
                     st.dataframe(df, use_container_width=True, hide_index=True)
 
+                if not attention_report_df.empty:
+                    with st.expander("Pokaż pozycje wymagające uwagi"):
+                        st.dataframe(attention_report_df, use_container_width=True, hide_index=True)
+
                 with st.expander("Pokaż raport zgodności z bazą nazw"):
-                    st.dataframe(report_df, use_container_width=True, hide_index=True)
+                    st.dataframe(report_display_df, use_container_width=True, hide_index=True)
 
 
         except imaplib.IMAP4.error as e:
