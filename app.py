@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic5"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic6"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -948,7 +948,7 @@ with col5:
     )
 
 
-button_col, loading_col = st.columns([1.4, 4], vertical_alignment="center")
+button_col, loading_col = st.columns([2, 6], vertical_alignment="center")
 
 with button_col:
     pobierz_clicked = st.button("Pobierz wysłane wiadomości", use_container_width=True)
@@ -968,8 +968,11 @@ if pobierz_clicked:
                 <div style="
                     color:#D0D4DC;
                     font-size:14px;
-                    padding:8px 0 0 2px;
-                    line-height:1.4;
+                    min-height:38px;
+                    display:flex;
+                    align-items:center;
+                    line-height:1.3;
+                    padding:0 0 0 2px;
                 ">
                     Łączenie z o2 i pobieranie wiadomości...
                 </div>
@@ -1153,7 +1156,6 @@ if pobierz_clicked:
 
                 df.insert(0, "Lp.", range(1, len(df) + 1))
 
-                st.success(f"Pobrano wiadomości z wybranego zakresu godzin: {len(df)}")
 
                 report_df = build_names_report(base_items, rows)
 
@@ -1173,36 +1175,13 @@ if pobierz_clicked:
                     columns={"Nazwa wymagana": "Pozycja z bazy"}
                 )
 
-                attention_statuses = ["OK z błędem", "DO WERYFIKACJI", "BRAK"]
-                attention_report_df = report_display_df[
-                    report_display_df["Status"].isin(attention_statuses)
-                ].copy()
-
                 ok_count = (report_df["Status"] == "OK").sum()
                 ok_alias_count = (report_df["Status"] == "OK alias").sum()
                 ok_error_count = (report_df["Status"] == "OK z błędem").sum()
                 review_count = (report_df["Status"] == "DO WERYFIKACJI").sum()
                 missing_count = (report_df["Status"] == "BRAK").sum()
 
-                st.markdown(f"""
-                <div style="display:flex; width:100%; gap:6px; margin-top:10px; margin-bottom:10px; font-size:16px; font-weight:400;">
-                <div style="flex:1; box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
-                    OK: {ok_count}
-                </div>
-                <div style="flex:1; box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
-                    OK alias: {ok_alias_count}
-                </div>
-                <div style="flex:1; box-sizing:border-box; background-color:#4A3218; color:#FFCF8A; padding:10px 12px; border-radius:6px; text-align:center;">
-                    OK z błędem: {ok_error_count}
-                </div>
-                <div style="flex:1; box-sizing:border-box; background-color:#2B3038; color:#D0D4DC; padding:10px 12px; border-radius:6px; text-align:center;">
-                    DO WERYFIKACJI: {review_count}
-                </div>
-                <div style="flex:1; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 12px; border-radius:6px; text-align:center;">
-                    BRAK: {missing_count}
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
+                total_count = len(report_df)
 
                 missing_names = report_df.loc[
                     report_df["Status"] == "BRAK",
@@ -1215,20 +1194,32 @@ if pobierz_clicked:
                     missing_text = "brak"
 
                 st.markdown(f"""
-                <div style="
-                    width:100%;
-                    box-sizing:border-box;
-                    background-color:#4A1F25;
-                    color:#FFB3B3;
-                    padding:12px 14px;
-                    border-radius:6px;
-                    text-align:left;
-                    font-size:16px;
-                    font-weight:400;
-                    margin-top:6px;
-                    margin-bottom:10px;
-                ">
-                    <strong>Braki:</strong> {missing_text}
+                <div style="width:100%; margin-top:10px; margin-bottom:10px; font-size:16px; font-weight:400;">
+                    <div style="display:flex; width:100%; gap:6px; margin-bottom:6px;">
+                        <div style="flex:1; box-sizing:border-box; background-color:#173A5E; color:#B8DCFF; padding:10px 12px; border-radius:6px; text-align:center;">
+                            Łącznie: {total_count}
+                        </div>
+                        <div style="flex:1; box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
+                            OK: {ok_count}
+                        </div>
+                        <div style="flex:1; box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
+                            OK alias: {ok_alias_count}
+                        </div>
+                        <div style="flex:1; box-sizing:border-box; background-color:#4A3218; color:#FFCF8A; padding:10px 12px; border-radius:6px; text-align:center;">
+                            OK z błędem: {ok_error_count}
+                        </div>
+                        <div style="flex:1; box-sizing:border-box; background-color:#2B3038; color:#D0D4DC; padding:10px 12px; border-radius:6px; text-align:center;">
+                            DO WERYFIKACJI: {review_count}
+                        </div>
+                    </div>
+                    <div style="display:flex; width:100%; gap:6px;">
+                        <div style="flex:1; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 12px; border-radius:6px; text-align:center;">
+                            BRAK: {missing_count}
+                        </div>
+                        <div style="flex:4; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 14px; border-radius:6px; text-align:left;">
+                            <strong>Braki:</strong> {missing_text}
+                        </div>
+                    </div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -1275,10 +1266,6 @@ if pobierz_clicked:
 
                 with st.expander("Pokaż wiadomości z wybranego zakresu"):
                     st.dataframe(df, use_container_width=True, hide_index=True)
-
-                if not attention_report_df.empty:
-                    with st.expander("Pokaż pozycje wymagające uwagi"):
-                        st.dataframe(attention_report_df, use_container_width=True, hide_index=True)
 
                 with st.expander("Pokaż raport zgodności z bazą nazw"):
                     st.dataframe(report_display_df, use_container_width=True, hide_index=True)
