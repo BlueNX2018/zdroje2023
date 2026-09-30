@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-duplicates-details"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -275,7 +275,6 @@ def mark_duplicate_attachments(rows):
             occurrence = {
                 "Godzina": row.get("Godzina", ""),
                 "Temat": row.get("Temat", ""),
-                "Do": row.get("Do", ""),
             }
             attachment_occurrences.setdefault(key, []).append(occurrence)
 
@@ -310,8 +309,6 @@ def mark_duplicate_attachments(rows):
         for occurrence in occurrences:
             hour = str(occurrence.get("Godzina", "")).strip()
             subject = str(occurrence.get("Temat", "")).strip()
-            recipient = str(occurrence.get("Do", "")).strip()
-
             if hour:
                 hours.append(hour)
 
@@ -323,9 +320,6 @@ def mark_duplicate_attachments(rows):
                 detail_parts.append(hour)
             if subject:
                 detail_parts.append(subject)
-            if recipient:
-                detail_parts.append(f"Do: {recipient}")
-
             if detail_parts:
                 details.append(" — ".join(detail_parts))
 
@@ -410,13 +404,42 @@ def mark_duplicate_messages(rows):
         group = message_groups[key]
         duplicate_rows.append({
             "Temat": group["Temat"],
-            "Do": group["Do"],
             "Załączniki": group["Załączniki"],
             "Liczba wiadomości": message_counts[key],
             "Godziny": ", ".join(str(value) for value in group["Godziny"] if value),
         })
 
     return rows, pd.DataFrame(duplicate_rows)
+
+
+
+def build_recipient_warning_df(rows):
+    """
+    Sprawdza, czy wszystkie pobrane wiadomości mają tego samego adresata.
+    Adresat nie jest normalnie pokazywany w tabelach ostrzeżeń, bo powinien być stały.
+    Jeżeli wystąpi więcej niż jeden adresat, zwracamy szczegóły do ostrzeżenia.
+    """
+    recipient_keys = set()
+    details = []
+
+    for row in rows:
+        recipient = str(row.get("Do", "")).strip()
+        recipient_key = normalize_text(recipient)
+
+        if not recipient_key:
+            recipient_key = "__empty__"
+
+        recipient_keys.add(recipient_key)
+        details.append({
+            "Godzina": row.get("Godzina", ""),
+            "Temat": row.get("Temat", ""),
+            "Adresat": recipient or "(brak adresata)",
+        })
+
+    if len(recipient_keys) <= 1:
+        return pd.DataFrame()
+
+    return pd.DataFrame(details)
 
 
 def normalize_text(text):
@@ -803,6 +826,9 @@ if st.button("Pobierz wysłane wiadomości"):
         st.error("Godzina początkowa nie może być późniejsza niż godzina końcowa.")
     else:
         try:
+            status_placeholder = st.empty()
+            progress_placeholder = st.empty()
+
             with st.spinner("Łączenie z o2 i pobieranie wiadomości..."):
                 mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
                 mail.login(login, haslo)
@@ -830,9 +856,10 @@ if st.button("Pobierz wysłane wiadomości"):
 
                 message_ids = data[0].split()
 
-                st.info(
-                    f"Znaleziono wiadomości w szerszym zakresie IMAP {imap_from}–{imap_to}: {len(message_ids)}. "
-                    f"Do tabeli trafią tylko wiadomości z dnia {selected_date} i godzin {start_time}–{end_time}."
+                status_placeholder.info(
+                    f"Wyszukuję wiadomości z dnia {selected_date} "
+                    f"w godzinach od {start_time.strftime('%H:%M')} do {end_time.strftime('%H:%M')}. "
+                    f"Znalazłem {len(message_ids)} wiadomości. Analizuję."
                 )
 
                 rows = []
@@ -842,7 +869,7 @@ if st.button("Pobierz wysłane wiadomości"):
                 skipped_by_date_or_time = 0
 
                 if message_ids:
-                    progress = st.progress(0)
+                    progress = progress_placeholder.progress(0)
 
                     for idx, uid in enumerate(message_ids, start=1):
                         progress.progress(idx / len(message_ids))
@@ -946,20 +973,10 @@ if st.button("Pobierz wysłane wiadomości"):
                             # "Liczba rozpoznanych nazw załączników": len(attachments),
                         })
 
-                if technical_debug_rows:
-                    debug_df = pd.DataFrame(technical_debug_rows)
-                    with st.expander("Diagnostyka techniczna IMAP"):
-                        st.warning(
-                            "Części wiadomości nie udało się w pełni odczytać przez IMAP. "
-                            "Jeżeli pojawia się FETCH: NO także po ponownym połączeniu, problem jest po stronie serwera poczty albo konkretnej wiadomości."
-                        )
-                        st.dataframe(debug_df, use_container_width=True)
+                debug_df = pd.DataFrame(technical_debug_rows) if technical_debug_rows else pd.DataFrame()
 
-                if skipped_by_date_or_time:
-                    st.caption(
-                        f"Pominięto {skipped_by_date_or_time} wiadomości z szerszego zakresu IMAP, "
-                        "bo miały inną datę albo godzinę poza wybranym zakresem."
-                    )
+                status_placeholder.empty()
+                progress_placeholder.empty()
 
                 mail.logout()
 
@@ -977,43 +994,6 @@ if st.button("Pobierz wysłane wiadomości"):
                 df.insert(0, "Lp.", range(1, len(df) + 1))
 
                 st.success(f"Pobrano wiadomości z wybranego zakresu godzin: {len(df)}")
-
-                expected_count = len(base_items)
-                mail_count = len(df)
-                mail_difference = mail_count - expected_count
-
-                if mail_difference == 0:
-                    count_background = "#2B3038"
-                    count_color = "#D0D4DC"
-                    count_text = "zgodna"
-                elif mail_difference > 0:
-                    count_background = "#4A3218"
-                    count_color = "#FFCF8A"
-                    count_text = f"nadwyżka: +{mail_difference}"
-                else:
-                    count_background = "#4A1F25"
-                    count_color = "#FFB3B3"
-                    count_text = f"brak względem liczby pozycji: {mail_difference}"
-
-                st.markdown(f"""
-                <div style="
-                    width:100%;
-                    box-sizing:border-box;
-                    background-color:{count_background};
-                    color:{count_color};
-                    padding:10px 14px;
-                    border-radius:6px;
-                    text-align:left;
-                    font-size:15px;
-                    font-weight:400;
-                    margin-top:6px;
-                    margin-bottom:10px;
-                ">
-                    <strong>Liczba wiadomości:</strong> {mail_count} &nbsp; | &nbsp;
-                    <strong>Liczba pozycji w bazie:</strong> {expected_count} &nbsp; | &nbsp;
-                    <strong>Różnica:</strong> {count_text}
-                </div>
-                """, unsafe_allow_html=True)
 
                 report_df = build_names_report(base_items, rows)
 
@@ -1071,31 +1051,20 @@ if st.button("Pobierz wysłane wiadomości"):
                 </div>
                 """, unsafe_allow_html=True)
 
+                recipient_warning_df = build_recipient_warning_df(rows)
+
+                warning_items = []
+                if not recipient_warning_df.empty:
+                    warning_items.append(f"różni adresaci wiadomości: {len(recipient_warning_df)} wpisów")
                 if not duplicate_attachments_df.empty:
-                    duplicate_count = len(duplicate_attachments_df)
-                    st.markdown(f"""
-                    <div style="
-                        width:100%;
-                        box-sizing:border-box;
-                        background-color:#4A3218;
-                        color:#FFCF8A;
-                        padding:12px 14px;
-                        border-radius:6px;
-                        text-align:left;
-                        font-size:16px;
-                        font-weight:400;
-                        margin-top:6px;
-                        margin-bottom:10px;
-                    ">
-                        <strong>Powtórzone nazwy załączników:</strong> {duplicate_count}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    with st.expander("Pokaż powtarzające się nazwy załączników"):
-                        st.dataframe(duplicate_attachments_df, use_container_width=True)
-
+                    warning_items.append(f"powtórzone nazwy załączników: {len(duplicate_attachments_df)}")
                 if not duplicate_messages_df.empty:
-                    duplicate_message_count = len(duplicate_messages_df)
+                    warning_items.append(f"podejrzenie powtórnie wysłanych wiadomości: {len(duplicate_messages_df)}")
+                if not debug_df.empty:
+                    warning_items.append(f"problemy techniczne IMAP: {len(debug_df)}")
+
+                if warning_items:
+                    warning_text = "; ".join(warning_items)
                     st.markdown(f"""
                     <div style="
                         width:100%;
@@ -1110,19 +1079,39 @@ if st.button("Pobierz wysłane wiadomości"):
                         margin-top:6px;
                         margin-bottom:10px;
                     ">
-                        <strong>Podejrzenie powtórnie wysłanych wiadomości:</strong> {duplicate_message_count}
+                        <strong>Ostrzeżenia po analizie:</strong> {warning_text}
                     </div>
                     """, unsafe_allow_html=True)
 
-                    with st.expander("Pokaż podejrzane duplikaty wiadomości"):
-                        st.dataframe(duplicate_messages_df, use_container_width=True)
+                    with st.expander("Pokaż ostrzeżenia po analizie"):
+                        if not recipient_warning_df.empty:
+                            st.error(
+                                "Wykryto różne adresy odbiorców w wiadomościach wysłanych. "
+                                "Adresat powinien być stały — sprawdź te wiadomości."
+                            )
+                            st.dataframe(recipient_warning_df, use_container_width=True, hide_index=True)
 
+                        if not duplicate_attachments_df.empty:
+                            st.markdown("**Powtórzone nazwy załączników**")
+                            st.dataframe(duplicate_attachments_df, use_container_width=True, hide_index=True)
+
+                        if not duplicate_messages_df.empty:
+                            st.markdown("**Podejrzenie powtórnie wysłanych wiadomości**")
+                            st.dataframe(duplicate_messages_df, use_container_width=True, hide_index=True)
+
+                        if not debug_df.empty:
+                            st.markdown("**Diagnostyka techniczna IMAP**")
+                            st.warning(
+                                "Części wiadomości nie udało się w pełni odczytać przez IMAP. "
+                                "Jeżeli pojawia się FETCH: NO także po ponownym połączeniu, problem jest po stronie serwera poczty albo konkretnej wiadomości."
+                            )
+                            st.dataframe(debug_df, use_container_width=True, hide_index=True)
 
                 with st.expander("Pokaż wiadomości z wybranego zakresu"):
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
 
                 with st.expander("Pokaż raport zgodności z bazą nazw"):
-                    st.dataframe(report_df, use_container_width=True)
+                    st.dataframe(report_df, use_container_width=True, hide_index=True)
 
 
         except imaplib.IMAP4.error as e:
