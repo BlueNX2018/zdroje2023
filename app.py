@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-attachments"
+APP_VERSION = "2026-09-30-imap-smartfetch-duplicates"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -291,6 +291,86 @@ def mark_duplicate_attachments(rows):
         }
         for key in sorted(duplicate_keys, key=lambda item: attachment_display_names[item].casefold())
     ]
+
+    return rows, pd.DataFrame(duplicate_rows)
+
+
+def make_message_duplicate_key(row):
+    """
+    Tworzy klucz do wykrywania prawdopodobnie powtórnie wysłanej wiadomości.
+    Nie pobieramy treści ani załączników; porównujemy tylko pola już odczytane przez IMAP.
+    """
+    recipients = normalize_text(row.get("Do", ""))
+    subject = normalize_text(row.get("Temat", ""))
+
+    attachment_names = row.get("_attachment_names", [])
+    attachment_key = "|".join(
+        sorted(
+            normalize_attachment_name(name)
+            for name in attachment_names
+            if normalize_attachment_name(name)
+        )
+    )
+
+    # Nie oznaczamy jako duplikatu pustych lub niemal pustych wiadomości,
+    # żeby uniknąć fałszywych alarmów.
+    if not subject and not attachment_key:
+        return ""
+
+    return f"{recipients}||{subject}||{attachment_key}"
+
+
+def mark_duplicate_messages(rows):
+    """
+    Oznacza prawdopodobnie powtórzone wiadomości.
+    Duplikat rozpoznajemy po zestawie: Do + Temat + lista nazw załączników.
+    """
+    message_counts = Counter()
+    message_groups = {}
+
+    for row in rows:
+        key = make_message_duplicate_key(row)
+
+        if not key:
+            continue
+
+        message_counts[key] += 1
+        message_groups.setdefault(key, {
+            "Do": row.get("Do", ""),
+            "Temat": row.get("Temat", ""),
+            "Załączniki": row.get("Załączniki", ""),
+            "Godziny": [],
+        })
+
+        message_groups[key]["Godziny"].append(row.get("Godzina", ""))
+
+    duplicate_keys = {
+        key
+        for key, count in message_counts.items()
+        if count > 1
+    }
+
+    for row in rows:
+        key = make_message_duplicate_key(row)
+
+        if key in duplicate_keys:
+            row["Podejrzenie duplikatu wiadomości"] = "TAK"
+            row["Grupa duplikatu"] = row.get("Temat", "") or row.get("Załączniki", "")
+        else:
+            row["Podejrzenie duplikatu wiadomości"] = "NIE"
+            row["Grupa duplikatu"] = ""
+
+    duplicate_rows = []
+
+    for key in sorted(duplicate_keys, key=lambda item: message_groups[item]["Temat"].casefold()):
+        group = message_groups[key]
+        duplicate_rows.append({
+            "Temat": group["Temat"],
+            "Do": group["Do"],
+            "Załączniki": group["Załączniki"],
+            "Liczba wiadomości": message_counts[key],
+            "Godziny": ", ".join(str(value) for value in group["Godziny"] if value),
+        })
 
     return rows, pd.DataFrame(duplicate_rows)
 
@@ -713,6 +793,7 @@ if st.button("Pobierz wysłane wiadomości"):
 
                 rows = []
                 duplicate_attachments_df = pd.DataFrame()
+                duplicate_messages_df = pd.DataFrame()
                 technical_debug_rows = []
                 skipped_by_date_or_time = 0
 
@@ -842,6 +923,7 @@ if st.button("Pobierz wysłane wiadomości"):
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
             else:
                 rows, duplicate_attachments_df = mark_duplicate_attachments(rows)
+                rows, duplicate_messages_df = mark_duplicate_messages(rows)
 
                 df = pd.DataFrame(rows)
 
@@ -851,6 +933,43 @@ if st.button("Pobierz wysłane wiadomości"):
                 df.insert(0, "Lp.", range(1, len(df) + 1))
 
                 st.success(f"Pobrano wiadomości z wybranego zakresu godzin: {len(df)}")
+
+                expected_count = len(base_items)
+                mail_count = len(df)
+                mail_difference = mail_count - expected_count
+
+                if mail_difference == 0:
+                    count_background = "#2B3038"
+                    count_color = "#D0D4DC"
+                    count_text = "zgodna"
+                elif mail_difference > 0:
+                    count_background = "#4A3218"
+                    count_color = "#FFCF8A"
+                    count_text = f"nadwyżka: +{mail_difference}"
+                else:
+                    count_background = "#4A1F25"
+                    count_color = "#FFB3B3"
+                    count_text = f"brak względem liczby pozycji: {mail_difference}"
+
+                st.markdown(f"""
+                <div style="
+                    width:100%;
+                    box-sizing:border-box;
+                    background-color:{count_background};
+                    color:{count_color};
+                    padding:10px 14px;
+                    border-radius:6px;
+                    text-align:left;
+                    font-size:15px;
+                    font-weight:400;
+                    margin-top:6px;
+                    margin-bottom:10px;
+                ">
+                    <strong>Liczba wiadomości:</strong> {mail_count} &nbsp; | &nbsp;
+                    <strong>Liczba pozycji w bazie:</strong> {expected_count} &nbsp; | &nbsp;
+                    <strong>Różnica:</strong> {count_text}
+                </div>
+                """, unsafe_allow_html=True)
 
                 report_df = build_names_report(base_items, rows)
 
@@ -930,6 +1049,29 @@ if st.button("Pobierz wysłane wiadomości"):
 
                     with st.expander("Pokaż powtarzające się nazwy załączników"):
                         st.dataframe(duplicate_attachments_df, use_container_width=True)
+
+                if not duplicate_messages_df.empty:
+                    duplicate_message_count = len(duplicate_messages_df)
+                    st.markdown(f"""
+                    <div style="
+                        width:100%;
+                        box-sizing:border-box;
+                        background-color:#4A3218;
+                        color:#FFCF8A;
+                        padding:12px 14px;
+                        border-radius:6px;
+                        text-align:left;
+                        font-size:16px;
+                        font-weight:400;
+                        margin-top:6px;
+                        margin-bottom:10px;
+                    ">
+                        <strong>Podejrzenie powtórnie wysłanych wiadomości:</strong> {duplicate_message_count}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    with st.expander("Pokaż podejrzane duplikaty wiadomości"):
+                        st.dataframe(duplicate_messages_df, use_container_width=True)
 
 
                 with st.expander("Pokaż wiadomości z wybranego zakresu"):
