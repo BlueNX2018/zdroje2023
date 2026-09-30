@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-10-01-imap-sf-c19"
+APP_VERSION = "2026-10-01-imap-sf-c20"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1087,7 +1087,14 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
         )
 
 
-def render_info_bar(text, bg="#173A5E", fg="#B7D9FF"):
+def render_info_bar(text, bg="#173A5E", fg="#B7D9FF", right_text=""):
+    right_html = ""
+    if right_text:
+        right_html = (
+            f'<span style="margin-left:auto; color:#9FB7D0; font-size:11px; '
+            f'line-height:1; white-space:nowrap;">{right_text}</span>'
+        )
+
     st.markdown(
         f"""
         <div style="
@@ -1097,14 +1104,17 @@ def render_info_bar(text, bg="#173A5E", fg="#B7D9FF"):
             color:{fg};
             padding:8px 10px;
             border-radius:6px;
-            text-align:left;
             font-size:13px;
             font-weight:400;
             line-height:1.25;
             margin-top:10px;
             margin-bottom:10px;
+            display:flex;
+            align-items:center;
+            gap:12px;
         ">
-            {text}
+            <span>{text}</span>
+            {right_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -1144,35 +1154,10 @@ def set_evening_hours():
     st.session_state.end_time = time(22, 0)
 
 
-title_col, version_col = st.columns([5, 1], vertical_alignment="bottom")
-
-with title_col:
-    st.subheader("Kontrola wysłanych wiadomości")
-
-with version_col:
-    st.markdown(
-        f"""
-        <div style="
-            text-align:right;
-            color:#777;
-            font-size:11px;
-            line-height:1;
-            padding-bottom:6px;
-            white-space:nowrap;
-        ">
-            v {APP_VERSION}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-st.write(
-    "Pobieranie wiadomości z folderu wysłane, filtrowanie po godzinach "
-    "i sprawdzanie bazy nazw z aliasami."
-)
+st.subheader("Kontrola wysłanych wiadomości")
 
 base_items = load_base_names()
-render_info_bar(f"Wczytano bazę nazw: {len(base_items)} pozycji.")
+render_info_bar(f"Wczytano bazę nazw: {len(base_items)} pozycji.", right_text=f"v {APP_VERSION}")
 
 login_col, haslo_col = st.columns(2)
 
@@ -1593,8 +1578,8 @@ if pobierz_clicked:
                     <div style="
                         width:100%;
                         box-sizing:border-box;
-                        background-color:#2B3038;
-                        color:#D0D4DC;
+                        background-color:#4A2E1F;
+                        color:#F2B38A;
                         padding:8px 10px;
                         border-radius:6px;
                         text-align:left;
@@ -1603,11 +1588,11 @@ if pobierz_clicked:
                         margin-top:10px;
                         margin-bottom:10px;
                     ">
-                        <strong>Ostrzeżenia</strong>
+                        <strong>Uwagi</strong>
                     </div>
                     """, unsafe_allow_html=True)
 
-                    with st.expander(f"Ostrzeżenia ({len(warning_df)})"):
+                    with st.expander(f"Uwagi ({len(warning_df)})"):
                         st.dataframe(
                             warning_df,
                             use_container_width=True,
