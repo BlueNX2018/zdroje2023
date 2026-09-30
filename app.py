@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic11"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic12"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -491,6 +491,32 @@ def mark_recipient_validity(rows):
     return expected_recipient, pd.DataFrame(warning_rows)
 
 
+def mark_image_validity(rows):
+    """
+    Oznacza wiadomości, które nie zawierają załącznika graficznego.
+
+    Zasada kontroli:
+    - wiadomość bez zdjęcia nie jest zaliczana jako prawidłowa,
+    - trafia do ostrzeżeń jako brak zdjęcia.
+    """
+    warning_rows = []
+
+    for row in rows:
+        has_image = str(row.get("Zdjęcie", "")).strip().upper() == "TAK"
+
+        if has_image:
+            row["_image_ok"] = "TAK"
+        else:
+            row["_image_ok"] = "NIE"
+            warning_rows.append({
+                "Godzina": row.get("Godzina", ""),
+                "Temat": row.get("Temat", ""),
+                "Załączniki": row.get("Załączniki", ""),
+            })
+
+    return rows, pd.DataFrame(warning_rows)
+
+
 
 def format_occurrence_time_subject(time_value, subject_value):
     """Zwraca krótki opis wystąpienia: godzina — temat."""
@@ -510,6 +536,7 @@ def build_warning_summary_df(
     duplicate_attachments_df,
     duplicate_messages_df,
     recipient_warning_df,
+    image_warning_df,
     debug_df,
 ):
     """
@@ -571,6 +598,25 @@ def build_warning_summary_df(
                 "Element": subject or "Adresat wiadomości",
                 "Wystąpienia": " — ".join(occurrence_parts),
                 "Uwagi": f"Wiadomość wysłano na inny adres niż {expected_recipient}. Nie została zaliczona jako prawidłowa.",
+            })
+
+    if image_warning_df is not None and not image_warning_df.empty:
+        for _, row in image_warning_df.iterrows():
+            subject = str(row.get("Temat", "")).strip()
+            base = format_occurrence_time_subject(row.get("Godzina", ""), subject)
+            attachments = str(row.get("Załączniki", "")).strip()
+
+            occurrence_parts = []
+            if base:
+                occurrence_parts.append(base)
+            if attachments:
+                occurrence_parts.append(f"załączniki: {attachments}")
+
+            warning_rows.append({
+                "Ocena": "Brak zdjęcia",
+                "Element": subject or "Wiadomość bez zdjęcia",
+                "Wystąpienia": " — ".join(occurrence_parts),
+                "Uwagi": "Wiadomość nie zawiera załącznika graficznego i nie została zaliczona jako prawidłowa.",
             })
 
     if debug_df is not None and not debug_df.empty:
@@ -1164,7 +1210,10 @@ if pobierz_clicked:
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
             else:
                 expected_recipient, recipient_warning_df = mark_recipient_validity(rows)
-                valid_rows = [row for row in rows if row.get("_recipient_ok") != "NIE"]
+
+                recipient_valid_rows = [row for row in rows if row.get("_recipient_ok") != "NIE"]
+                recipient_valid_rows, image_warning_df = mark_image_validity(recipient_valid_rows)
+                valid_rows = [row for row in recipient_valid_rows if row.get("_image_ok") != "NIE"]
 
                 valid_rows, duplicate_messages_df = mark_duplicate_messages(valid_rows)
                 valid_rows, duplicate_attachments_df = mark_duplicate_attachments(valid_rows)
@@ -1181,6 +1230,7 @@ if pobierz_clicked:
                     "Grupa duplikatu",
                     "_duplicate_message_key",
                     "_recipient_ok",
+                    "_image_ok",
                 ]
 
                 df = df.drop(
@@ -1257,12 +1307,15 @@ if pobierz_clicked:
                     duplicate_attachments_df,
                     duplicate_messages_df,
                     recipient_warning_df,
+                    image_warning_df,
                     debug_df,
                 )
 
                 warning_items = []
                 if not recipient_warning_df.empty:
                     warning_items.append(f"błędny adresat: {len(recipient_warning_df)} wpisów")
+                if not image_warning_df.empty:
+                    warning_items.append(f"brak zdjęcia: {len(image_warning_df)} wpisów")
                 if not duplicate_attachments_df.empty:
                     warning_items.append(f"powtórzone nazwy załączników: {len(duplicate_attachments_df)}")
                 if not duplicate_messages_df.empty:
@@ -1277,6 +1330,11 @@ if pobierz_clicked:
                         st.warning(
                             f"Adres podstawowy: {expected_recipient}. "
                             "Wykryto wiadomości wysłane na inny adres — nie zostały zaliczone jako prawidłowe."
+                        )
+
+                    if not image_warning_df.empty:
+                        st.warning(
+                            "Wykryto wiadomości bez zdjęcia — nie zostały zaliczone jako prawidłowe."
                         )
 
                     st.dataframe(
