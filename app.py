@@ -15,7 +15,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-uid-batch"
+APP_VERSION = "2026-09-30-uid-retry"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -108,6 +108,76 @@ def fetch_headers_and_bodystructures(mail, uids, batch_size=25):
                     body_map[current_uid].append(bytes_to_text(item))
 
     return header_map, body_map, fetch_status_map
+
+
+def fetch_header_fallback(mail, uid):
+    """
+    Awaryjnie pobiera nagłówek pojedynczej wiadomości.
+    Używane tylko dla UID, dla których zbiorczy FETCH nie zwrócił nagłówka.
+    Nie pobiera pełnej treści wiadomości ani załączników.
+    """
+    uid_text = bytes_to_text(uid)
+    attempts = [
+        "(UID RFC822.HEADER BODYSTRUCTURE)",
+        "(UID BODY.PEEK[HEADER] BODYSTRUCTURE)",
+        "(UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)",
+    ]
+
+    collected_bodystructure = []
+    last_status = ""
+    last_error = ""
+
+    for query in attempts:
+        try:
+            status, data = mail.uid("FETCH", uid, query)
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+        last_status = status
+
+        if status != "OK":
+            continue
+
+        fallback_header = b""
+        current_uid = uid_text
+
+        for item in data:
+            if isinstance(item, tuple):
+                meta, content = item
+                meta_text = bytes_to_text(meta)
+                collected_bodystructure.append(meta_text)
+
+                # Jeśli serwer zwrócił inny UID w meta, używamy go tylko pomocniczo.
+                meta_uid = extract_uid_from_meta(meta)
+                if meta_uid:
+                    current_uid = meta_uid
+
+                if isinstance(content, bytes):
+                    content_upper = content.upper()
+
+                    # Przyjmujemy każdy zwrot wyglądający jak nagłówek RFC822,
+                    # a nie tylko taki, który zawiera konkretne pole DATE/SUBJECT/TO.
+                    if (
+                        b"\n" in content
+                        and (
+                            b":" in content
+                            or b"DATE" in content_upper
+                            or b"SUBJECT" in content_upper
+                            or b"FROM" in content_upper
+                            or b"TO" in content_upper
+                        )
+                    ):
+                        fallback_header = content
+                    else:
+                        collected_bodystructure.append(bytes_to_text(content))
+            else:
+                collected_bodystructure.append(bytes_to_text(item))
+
+        if fallback_header:
+            return fallback_header, " ".join(collected_bodystructure), last_status, "OK fallback"
+
+    return b"", " ".join(collected_bodystructure), last_status, last_error or "brak nagłówka po fallback"
 
 def decode_mime_header(value):
     if not value:
@@ -655,12 +725,43 @@ if st.button("Pobierz wysłane wiadomości"):
                             msg_time = None
 
                         if not header_bytes:
-                            debug_rows.append({
-                                "UID": uid_text,
-                                "Status FETCH": fetch_status_map.get(uid_text, ""),
-                                "Decyzja": "Pominięto: brak nagłówka z IMAP",
-                            })
-                            continue
+                            fallback_header, fallback_bodystructure, fallback_status, fallback_info = fetch_header_fallback(mail, uid)
+
+                            if fallback_header:
+                                header_bytes = fallback_header
+                                if fallback_bodystructure:
+                                    bodystructure_text = (bodystructure_text + " " + fallback_bodystructure).strip()
+
+                                msg = email.message_from_bytes(header_bytes)
+                                subject = decode_mime_header(msg.get("Subject", ""))
+                                sender = decode_mime_header(msg.get("From", ""))
+                                recipients = decode_mime_header(msg.get("To", ""))
+                                date_raw = msg.get("Date", "")
+
+                                try:
+                                    dt = parsedate_to_datetime(date_raw)
+
+                                    warsaw_tz = ZoneInfo("Europe/Warsaw")
+
+                                    if dt.tzinfo is not None:
+                                        dt_local = dt.astimezone(warsaw_tz)
+                                    else:
+                                        dt_local = dt.replace(tzinfo=warsaw_tz)
+
+                                    msg_date = dt_local.date()
+                                    msg_time = dt_local.time().replace(microsecond=0)
+
+                                except Exception:
+                                    msg_date = None
+                                    msg_time = None
+                            else:
+                                debug_rows.append({
+                                    "UID": uid_text,
+                                    "Status FETCH": fetch_status_map.get(uid_text, ""),
+                                    "Status fallback": fallback_status,
+                                    "Decyzja": f"Pominięto: brak nagłówka z IMAP także po fallback ({fallback_info})",
+                                })
+                                continue
 
                         if msg_date is None or msg_time is None:
                             debug_rows.append({
