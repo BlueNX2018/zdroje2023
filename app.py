@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic6"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic7"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1195,28 +1195,28 @@ if pobierz_clicked:
 
                 st.markdown(f"""
                 <div style="width:100%; margin-top:10px; margin-bottom:10px; font-size:16px; font-weight:400;">
-                    <div style="display:flex; width:100%; gap:6px; margin-bottom:6px;">
-                        <div style="flex:1; box-sizing:border-box; background-color:#173A5E; color:#B8DCFF; padding:10px 12px; border-radius:6px; text-align:center;">
+                    <div style="display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); width:100%; gap:6px; margin-bottom:6px;">
+                        <div style="box-sizing:border-box; background-color:#173A5E; color:#B8DCFF; padding:10px 12px; border-radius:6px; text-align:center;">
                             Łącznie: {total_count}
                         </div>
-                        <div style="flex:1; box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
+                        <div style="box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
                             OK: {ok_count}
                         </div>
-                        <div style="flex:1; box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
+                        <div style="box-sizing:border-box; background-color:#164B2A; color:#7CFF9B; padding:10px 12px; border-radius:6px; text-align:center;">
                             OK alias: {ok_alias_count}
                         </div>
-                        <div style="flex:1; box-sizing:border-box; background-color:#4A3218; color:#FFCF8A; padding:10px 12px; border-radius:6px; text-align:center;">
+                        <div style="box-sizing:border-box; background-color:#4A3218; color:#FFCF8A; padding:10px 12px; border-radius:6px; text-align:center;">
                             OK z błędem: {ok_error_count}
                         </div>
-                        <div style="flex:1; box-sizing:border-box; background-color:#2B3038; color:#D0D4DC; padding:10px 12px; border-radius:6px; text-align:center;">
+                        <div style="box-sizing:border-box; background-color:#2B3038; color:#D0D4DC; padding:10px 12px; border-radius:6px; text-align:center;">
                             DO WERYFIKACJI: {review_count}
                         </div>
                     </div>
                     <div style="display:flex; width:100%; gap:6px;">
-                        <div style="flex:1; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 12px; border-radius:6px; text-align:center;">
+                        <div style="flex:0 0 calc((100% - 24px) / 5); box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 12px; border-radius:6px; text-align:center;">
                             BRAK: {missing_count}
                         </div>
-                        <div style="flex:4; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 14px; border-radius:6px; text-align:left;">
+                        <div style="flex:1 1 auto; min-width:0; box-sizing:border-box; background-color:#4A1F25; color:#FFB3B3; padding:10px 14px; border-radius:6px; text-align:left;">
                             <strong>Braki:</strong> {missing_text}
                         </div>
                     </div>
