@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-10-01-imap-smartfetch-C17"
+APP_VERSION = "2026-10-01-imap-sf-c18"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1086,6 +1086,54 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
             unsafe_allow_html=True,
         )
 
+
+def render_info_bar(text, bg="#2B3038", fg="#D0D4DC"):
+    st.markdown(
+        f"""
+        <div style="
+            box-sizing:border-box;
+            width:100%;
+            background-color:{bg};
+            color:{fg};
+            padding:5px 10px;
+            border-radius:6px;
+            text-align:left;
+            font-size:13px;
+            font-weight:400;
+            line-height:1.25;
+            margin-top:4px;
+            margin-bottom:8px;
+        ">
+            {text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_info_bar_placeholder(placeholder, text, bg="#2B3038", fg="#D0D4DC"):
+    placeholder.markdown(
+        f"""
+        <div style="
+            box-sizing:border-box;
+            width:100%;
+            background-color:{bg};
+            color:{fg};
+            padding:5px 10px;
+            border-radius:6px;
+            text-align:left;
+            font-size:13px;
+            font-weight:400;
+            line-height:1.25;
+            margin-top:4px;
+            margin-bottom:8px;
+        ">
+            {text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def set_morning_hours():
     st.session_state.start_time = time(4, 0)
     st.session_state.end_time = time(10, 0)
@@ -1124,7 +1172,7 @@ st.write(
 )
 
 base_items = load_base_names()
-st.info(f"Wczytano bazę nazw: {len(base_items)} pozycji.")
+render_info_bar(f"Wczytano bazę nazw: {len(base_items)} pozycji.")
 
 login_col, haslo_col = st.columns(2)
 
@@ -1252,7 +1300,8 @@ if pobierz_clicked:
             if message_ids:
                 progress = progress_placeholder.progress(0)
 
-                status_placeholder.info(
+                render_info_bar_placeholder(
+                    status_placeholder,
                     f"Wyszukuję wiadomości z dnia {selected_date} "
                     f"w godzinach od {start_time.strftime('%H:%M')} do {end_time.strftime('%H:%M')}. "
                     f"Znalazłem {len(message_ids)} wiadomości. Analizuję."
