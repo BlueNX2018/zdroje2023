@@ -15,7 +15,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-uid-fix"
+APP_VERSION = "2026-09-30-uid-debug"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -533,6 +533,7 @@ if st.button("Pobierz wysłane wiadomości"):
                 )
 
                 rows = []
+                debug_rows = []
 
                 if message_ids:
                     progress = st.progress(0)
@@ -540,46 +541,65 @@ if st.button("Pobierz wysłane wiadomości"):
                     for idx, uid in enumerate(message_ids, start=1):
                         progress.progress(idx / len(message_ids))
 
-                        fetch_query = (
-                            '(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)'
-                        )
+                        uid_text = uid.decode("utf-8", errors="replace") if isinstance(uid, bytes) else str(uid)
 
-                        status, msg_data = mail.uid("FETCH", uid, fetch_query)
-
-                        if status != "OK":
-                            continue
+                        # Pobieramy nagłówki osobno. Jest to stabilniejsze niż łączenie
+                        # HEADER.FIELDS i BODYSTRUCTURE w jednym FETCH.
+                        header_query = '(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)])'
+                        status_header, header_data = mail.uid("FETCH", uid, header_query)
 
                         header_bytes = b""
+
+                        if status_header == "OK":
+                            for item in header_data:
+                                if isinstance(item, tuple):
+                                    meta = item[0]
+                                    content = item[1]
+
+                                    if isinstance(content, bytes) and (
+                                        b"DATE:" in content.upper()
+                                        or b"SUBJECT:" in content.upper()
+                                        or b"TO:" in content.upper()
+                                    ):
+                                        header_bytes = content
+                                        break
+
+                        # Awaryjnie pobieramy pełny nagłówek, jeśli o2 nie zwrócił
+                        # poprawnie HEADER.FIELDS.
+                        if not header_bytes:
+                            status_fallback, fallback_data = mail.uid("FETCH", uid, '(BODY.PEEK[HEADER])')
+
+                            if status_fallback == "OK":
+                                for item in fallback_data:
+                                    if isinstance(item, tuple) and isinstance(item[1], bytes):
+                                        header_bytes = item[1]
+                                        break
+
+                        # BODYSTRUCTURE pobieramy osobno. Jeśli się nie uda, nadal
+                        # wykorzystujemy nagłówki do sprawdzenia adresata/tematu/godziny.
+                        status_body, body_data = mail.uid("FETCH", uid, '(BODYSTRUCTURE)')
                         bodystructure_parts = []
 
-                        for item in msg_data:
-                            if isinstance(item, tuple):
-                                meta = item[0]
-                                content = item[1]
+                        if status_body == "OK":
+                            for item in body_data:
+                                if isinstance(item, tuple):
+                                    meta = item[0]
+                                    content = item[1]
 
-                                if b"BODY[HEADER.FIELDS" in meta.upper():
-                                    header_bytes = content
+                                    try:
+                                        bodystructure_parts.append(meta.decode("utf-8", errors="replace"))
+                                    except Exception:
+                                        bodystructure_parts.append(str(meta))
 
-                                try:
-                                    bodystructure_parts.append(
-                                        meta.decode("utf-8", errors="replace")
-                                    )
-                                except Exception:
-                                    bodystructure_parts.append(str(meta))
-
-                                try:
-                                    bodystructure_parts.append(
-                                        content.decode("utf-8", errors="replace")
-                                    )
-                                except Exception:
-                                    bodystructure_parts.append(str(content))
-                            else:
-                                try:
-                                    bodystructure_parts.append(
-                                        item.decode("utf-8", errors="replace")
-                                    )
-                                except Exception:
-                                    bodystructure_parts.append(str(item))
+                                    try:
+                                        bodystructure_parts.append(content.decode("utf-8", errors="replace"))
+                                    except Exception:
+                                        bodystructure_parts.append(str(content))
+                                else:
+                                    try:
+                                        bodystructure_parts.append(item.decode("utf-8", errors="replace"))
+                                    except Exception:
+                                        bodystructure_parts.append(str(item))
 
                         bodystructure_text = " ".join(bodystructure_parts)
                         msg = email.message_from_bytes(header_bytes)
@@ -588,6 +608,10 @@ if st.button("Pobierz wysłane wiadomości"):
                         sender = decode_mime_header(msg.get("From", ""))
                         recipients = decode_mime_header(msg.get("To", ""))
                         date_raw = msg.get("Date", "")
+
+                        msg_date = None
+                        msg_time = None
+                        reason = ""
 
                         try:
                             dt = parsedate_to_datetime(date_raw)
@@ -602,19 +626,34 @@ if st.button("Pobierz wysłane wiadomości"):
                             msg_date = dt_local.date()
                             msg_time = dt_local.time().replace(microsecond=0)
 
-                        except Exception:
-                            msg_date = None
-                            msg_time = None
+                        except Exception as date_error:
+                            reason = f"Pominięto: błąd daty/nagłówka ({date_error})"
 
-                        if msg_date is None or msg_time is None:
-                            continue
+                        if not header_bytes:
+                            reason = "Pominięto: brak nagłówka z IMAP"
+                        elif msg_date is None or msg_time is None:
+                            if not reason:
+                                reason = "Pominięto: brak daty/godziny"
+                        elif msg_date != selected_date:
+                            reason = f"Pominięto: inna data ({msg_date})"
+                        elif not (start_time <= msg_time <= end_time):
+                            reason = f"Pominięto: poza godzinami ({msg_time})"
+                        else:
+                            reason = "Dodano do tabeli"
 
-                        if msg_date != selected_date:
-                            continue
+                        debug_rows.append({
+                            "UID": uid_text,
+                            "Fetch nagłówka": status_header,
+                            "Fetch struktury": status_body,
+                            "Data nagłówka": date_raw,
+                            "Data lokalna": str(msg_date) if msg_date else "",
+                            "Godzina": str(msg_time) if msg_time else "",
+                            "Do": recipients,
+                            "Temat": subject,
+                            "Decyzja": reason,
+                        })
 
-                        in_range = start_time <= msg_time <= end_time
-
-                        if not in_range:
+                        if reason != "Dodano do tabeli":
                             continue
 
                         attachments, has_attachment, has_image = analyze_bodystructure(
@@ -644,6 +683,17 @@ if st.button("Pobierz wysłane wiadomości"):
                         })
 
                 mail.logout()
+
+            if debug_rows:
+                debug_df = pd.DataFrame(debug_rows)
+                added_count = (debug_df["Decyzja"] == "Dodano do tabeli").sum()
+                st.caption(
+                    f"Diagnostyka IMAP: sprawdzono UID: {len(debug_df)}, "
+                    f"dodano do tabeli: {added_count}."
+                )
+
+                with st.expander("Diagnostyka pobierania IMAP"):
+                    st.dataframe(debug_df, use_container_width=True)
 
             if not rows:
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
