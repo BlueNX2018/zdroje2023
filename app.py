@@ -15,7 +15,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-uid-debug"
+APP_VERSION = "2026-09-30-uid-batch"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -30,6 +30,84 @@ IMAP_MONTHS = [
 
 def format_imap_date(date_value):
     return f"{date_value.day:02d}-{IMAP_MONTHS[date_value.month - 1]}-{date_value.year}"
+
+
+
+def chunked(items, size):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def bytes_to_text(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def extract_uid_from_meta(meta):
+    meta_text = bytes_to_text(meta)
+    match = re.search(r"\bUID\s+(\d+)\b", meta_text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def fetch_headers_and_bodystructures(mail, uids, batch_size=25):
+    """
+    Pobiera nagłówki i BODYSTRUCTURE partiami, żeby nie wykonywać
+    osobnego FETCH dla każdej wiadomości. To jest łagodniejsze dla IMAP o2
+    i powinno ograniczyć przypadki losowego braku nagłówka.
+    """
+    header_map = {}
+    body_map = {}
+    fetch_status_map = {}
+
+    for batch in chunked(uids, batch_size):
+        uid_set = b",".join(batch)
+        status, data = mail.uid(
+            "FETCH",
+            uid_set,
+            "(UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)"
+        )
+
+        for uid in batch:
+            uid_text = bytes_to_text(uid)
+            fetch_status_map[uid_text] = status
+            body_map.setdefault(uid_text, [])
+
+        if status != "OK":
+            continue
+
+        current_uid = ""
+
+        for item in data:
+            if isinstance(item, tuple):
+                meta, content = item
+                uid_text = extract_uid_from_meta(meta)
+                if uid_text:
+                    current_uid = uid_text
+                    body_map.setdefault(current_uid, [])
+                    body_map[current_uid].append(bytes_to_text(meta))
+
+                if current_uid and isinstance(content, bytes):
+                    if (
+                        b"DATE:" in content.upper()
+                        or b"SUBJECT:" in content.upper()
+                        or b"TO:" in content.upper()
+                    ):
+                        header_map[current_uid] = content
+                    else:
+                        body_map.setdefault(current_uid, [])
+                        body_map[current_uid].append(bytes_to_text(content))
+
+            else:
+                # W odpowiedzi IMAP BODYSTRUCTURE bywa zwracane jako osobny element
+                # po nagłówku; dopisujemy go do ostatnio rozpoznanego UID.
+                if current_uid:
+                    body_map.setdefault(current_uid, [])
+                    body_map[current_uid].append(bytes_to_text(item))
+
+    return header_map, body_map, fetch_status_map
 
 def decode_mime_header(value):
     if not value:
@@ -536,82 +614,28 @@ if st.button("Pobierz wysłane wiadomości"):
                 debug_rows = []
 
                 if message_ids:
+                    with st.spinner("Pobieranie nagłówków wiadomości partiami..."):
+                        header_map, body_map, fetch_status_map = fetch_headers_and_bodystructures(
+                            mail,
+                            message_ids,
+                            batch_size=25,
+                        )
+
                     progress = st.progress(0)
 
                     for idx, uid in enumerate(message_ids, start=1):
                         progress.progress(idx / len(message_ids))
 
-                        uid_text = uid.decode("utf-8", errors="replace") if isinstance(uid, bytes) else str(uid)
+                        uid_text = bytes_to_text(uid)
+                        header_bytes = header_map.get(uid_text, b"")
+                        bodystructure_text = " ".join(body_map.get(uid_text, []))
 
-                        # Pobieramy nagłówki osobno. Jest to stabilniejsze niż łączenie
-                        # HEADER.FIELDS i BODYSTRUCTURE w jednym FETCH.
-                        header_query = '(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)])'
-                        status_header, header_data = mail.uid("FETCH", uid, header_query)
-
-                        header_bytes = b""
-
-                        if status_header == "OK":
-                            for item in header_data:
-                                if isinstance(item, tuple):
-                                    meta = item[0]
-                                    content = item[1]
-
-                                    if isinstance(content, bytes) and (
-                                        b"DATE:" in content.upper()
-                                        or b"SUBJECT:" in content.upper()
-                                        or b"TO:" in content.upper()
-                                    ):
-                                        header_bytes = content
-                                        break
-
-                        # Awaryjnie pobieramy pełny nagłówek, jeśli o2 nie zwrócił
-                        # poprawnie HEADER.FIELDS.
-                        if not header_bytes:
-                            status_fallback, fallback_data = mail.uid("FETCH", uid, '(BODY.PEEK[HEADER])')
-
-                            if status_fallback == "OK":
-                                for item in fallback_data:
-                                    if isinstance(item, tuple) and isinstance(item[1], bytes):
-                                        header_bytes = item[1]
-                                        break
-
-                        # BODYSTRUCTURE pobieramy osobno. Jeśli się nie uda, nadal
-                        # wykorzystujemy nagłówki do sprawdzenia adresata/tematu/godziny.
-                        status_body, body_data = mail.uid("FETCH", uid, '(BODYSTRUCTURE)')
-                        bodystructure_parts = []
-
-                        if status_body == "OK":
-                            for item in body_data:
-                                if isinstance(item, tuple):
-                                    meta = item[0]
-                                    content = item[1]
-
-                                    try:
-                                        bodystructure_parts.append(meta.decode("utf-8", errors="replace"))
-                                    except Exception:
-                                        bodystructure_parts.append(str(meta))
-
-                                    try:
-                                        bodystructure_parts.append(content.decode("utf-8", errors="replace"))
-                                    except Exception:
-                                        bodystructure_parts.append(str(content))
-                                else:
-                                    try:
-                                        bodystructure_parts.append(item.decode("utf-8", errors="replace"))
-                                    except Exception:
-                                        bodystructure_parts.append(str(item))
-
-                        bodystructure_text = " ".join(bodystructure_parts)
                         msg = email.message_from_bytes(header_bytes)
 
                         subject = decode_mime_header(msg.get("Subject", ""))
                         sender = decode_mime_header(msg.get("From", ""))
                         recipients = decode_mime_header(msg.get("To", ""))
                         date_raw = msg.get("Date", "")
-
-                        msg_date = None
-                        msg_time = None
-                        reason = ""
 
                         try:
                             dt = parsedate_to_datetime(date_raw)
@@ -626,34 +650,42 @@ if st.button("Pobierz wysłane wiadomości"):
                             msg_date = dt_local.date()
                             msg_time = dt_local.time().replace(microsecond=0)
 
-                        except Exception as date_error:
-                            reason = f"Pominięto: błąd daty/nagłówka ({date_error})"
+                        except Exception:
+                            msg_date = None
+                            msg_time = None
 
                         if not header_bytes:
-                            reason = "Pominięto: brak nagłówka z IMAP"
-                        elif msg_date is None or msg_time is None:
-                            if not reason:
-                                reason = "Pominięto: brak daty/godziny"
-                        elif msg_date != selected_date:
-                            reason = f"Pominięto: inna data ({msg_date})"
-                        elif not (start_time <= msg_time <= end_time):
-                            reason = f"Pominięto: poza godzinami ({msg_time})"
-                        else:
-                            reason = "Dodano do tabeli"
+                            debug_rows.append({
+                                "UID": uid_text,
+                                "Status FETCH": fetch_status_map.get(uid_text, ""),
+                                "Decyzja": "Pominięto: brak nagłówka z IMAP",
+                            })
+                            continue
 
-                        debug_rows.append({
-                            "UID": uid_text,
-                            "Fetch nagłówka": status_header,
-                            "Fetch struktury": status_body,
-                            "Data nagłówka": date_raw,
-                            "Data lokalna": str(msg_date) if msg_date else "",
-                            "Godzina": str(msg_time) if msg_time else "",
-                            "Do": recipients,
-                            "Temat": subject,
-                            "Decyzja": reason,
-                        })
+                        if msg_date is None or msg_time is None:
+                            debug_rows.append({
+                                "UID": uid_text,
+                                "Status FETCH": fetch_status_map.get(uid_text, ""),
+                                "Decyzja": "Pominięto: brak daty/godziny",
+                            })
+                            continue
 
-                        if reason != "Dodano do tabeli":
+                        if msg_date != selected_date:
+                            debug_rows.append({
+                                "UID": uid_text,
+                                "Status FETCH": fetch_status_map.get(uid_text, ""),
+                                "Decyzja": f"Pominięto: inna data ({msg_date})",
+                            })
+                            continue
+
+                        in_range = start_time <= msg_time <= end_time
+
+                        if not in_range:
+                            debug_rows.append({
+                                "UID": uid_text,
+                                "Status FETCH": fetch_status_map.get(uid_text, ""),
+                                "Decyzja": f"Pominięto: poza godzinami ({msg_time})",
+                            })
                             continue
 
                         attachments, has_attachment, has_image = analyze_bodystructure(
@@ -682,18 +714,12 @@ if st.button("Pobierz wysłane wiadomości"):
                             # "Liczba rozpoznanych nazw załączników": len(attachments),
                         })
 
+                if debug_rows:
+                    debug_df = pd.DataFrame(debug_rows)
+                    with st.expander("Diagnostyka pominiętych wiadomości"):
+                        st.dataframe(debug_df, use_container_width=True)
+
                 mail.logout()
-
-            if debug_rows:
-                debug_df = pd.DataFrame(debug_rows)
-                added_count = (debug_df["Decyzja"] == "Dodano do tabeli").sum()
-                st.caption(
-                    f"Diagnostyka IMAP: sprawdzono UID: {len(debug_df)}, "
-                    f"dodano do tabeli: {added_count}."
-                )
-
-                with st.expander("Diagnostyka pobierania IMAP"):
-                    st.dataframe(debug_df, use_container_width=True)
 
             if not rows:
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
