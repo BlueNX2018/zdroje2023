@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic13"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic14"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1061,21 +1061,30 @@ def render_status_tiles(recipient_warning_df, image_warning_df, debug_df):
             "fg": "#FFCF8A",
         })
 
-    tiles_html = "".join(
-        f"""
-        <div style="box-sizing:border-box; background-color:{tile['bg']}; color:{tile['fg']}; padding:8px 10px; border-radius:6px; text-align:center; font-size:14px; font-weight:400;">
-            {tile['text']}
-        </div>
-        """
-        for tile in tiles
-    )
+    if not tiles:
+        return
 
-    st.markdown(f"""
-    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:6px; margin-bottom:10px;">
-        {tiles_html}
-    </div>
-    """, unsafe_allow_html=True)
-
+    cols = st.columns(len(tiles))
+    for col, tile in zip(cols, tiles):
+        col.markdown(
+            f"""
+            <div style="
+                box-sizing:border-box;
+                width:100%;
+                background-color:{tile['bg']};
+                color:{tile['fg']};
+                padding:8px 10px;
+                border-radius:6px;
+                text-align:center;
+                font-size:14px;
+                font-weight:400;
+                margin-bottom:10px;
+            ">
+                {tile['text']}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 def set_morning_hours():
     st.session_state.start_time = time(4, 0)
