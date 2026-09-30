@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic8"
+APP_VERSION = "2026-09-30-imap-smart-10"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1143,6 +1143,7 @@ if pobierz_clicked:
 
                 columns_to_hide_in_messages = [
                     "_attachment_names",
+                    "Załącznik",
                     "Powtórzony załącznik",
                     "Powtórzone nazwy załączników",
                     "Podejrzenie duplikatu wiadomości",
@@ -1163,11 +1164,9 @@ if pobierz_clicked:
                     "Lp.",
                     "Nazwa wymagana",
                     "Alias",
-                    "Status",
-                    "Podobieństwo",
-                    "Godzina",
                     "Dopasowano przez",
                     "Uwagi",
+                    "Status",
                 ]
 
                 report_display_df = report_df[report_display_columns].copy()
@@ -1242,10 +1241,35 @@ if pobierz_clicked:
                     warning_items.append(f"problemy techniczne IMAP: {len(debug_df)}")
 
                 with st.expander("Wczytane wiadomości"):
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                            "Data": st.column_config.TextColumn("Data", width="small"),
+                            "Godzina": st.column_config.TextColumn("Godzina", width="small"),
+                            "Do": st.column_config.TextColumn("Do", width="medium"),
+                            "Temat": st.column_config.TextColumn("Temat", width="large"),
+                            "Zdjęcie": st.column_config.TextColumn("Zdjęcie", width="small"),
+                            "Załączniki": st.column_config.TextColumn("Załączniki", width="large"),
+                        },
+                    )
 
                 with st.expander("Raport zgodności"):
-                    st.dataframe(report_display_df, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        report_display_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                            "Pozycja z bazy": st.column_config.TextColumn("Pozycja z bazy", width="large"),
+                            "Alias": st.column_config.TextColumn("Alias", width="large"),
+                            "Dopasowano przez": st.column_config.TextColumn("Dopasowano przez", width="medium"),
+                            "Uwagi": st.column_config.TextColumn("Uwagi", width="medium"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                        },
+                    )
 
                 if warning_items:
                     warning_text = "; ".join(warning_items)
@@ -1263,11 +1287,11 @@ if pobierz_clicked:
                         margin-top:10px;
                         margin-bottom:10px;
                     ">
-                        <strong>Ostrzeżenia:</strong> {warning_text}
+                        <strong>Ostrzeżenia</strong>
                     </div>
                     """, unsafe_allow_html=True)
 
-                    with st.expander("Pokaż ostrzeżenia"):
+                    with st.expander("Ostrzeżenia"):
                         st.dataframe(warning_df, use_container_width=True, hide_index=True)
 
 
