@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smart-10"
+APP_VERSION = "2026-09-30-imap-smartfetch-cosmetic11"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -439,14 +439,16 @@ def mark_duplicate_messages(rows):
 
 
 
-def build_recipient_warning_df(rows):
+def mark_recipient_validity(rows):
     """
-    Sprawdza, czy wszystkie pobrane wiadomości mają tego samego adresata.
-    Adresat nie jest normalnie pokazywany w tabelach ostrzeżeń, bo powinien być stały.
-    Jeżeli wystąpi więcej niż jeden adresat, zwracamy szczegóły do ostrzeżenia.
+    Ustala podstawowy adres odbiorcy i oznacza wiadomości wysłane na inny adres.
+
+    Zasada kontroli:
+    - wiadomość wysłana na inny adres nie jest zaliczana jako prawidłowa,
+    - trafia do ostrzeżeń jako błąd adresata.
     """
-    recipient_keys = set()
-    details = []
+    recipient_counts = Counter()
+    recipient_display = {}
 
     for row in rows:
         recipient = str(row.get("Do", "")).strip()
@@ -454,18 +456,39 @@ def build_recipient_warning_df(rows):
 
         if not recipient_key:
             recipient_key = "__empty__"
+            recipient = "(brak adresata)"
 
-        recipient_keys.add(recipient_key)
-        details.append({
-            "Godzina": row.get("Godzina", ""),
-            "Temat": row.get("Temat", ""),
-            "Adresat": recipient or "(brak adresata)",
-        })
+        recipient_counts[recipient_key] += 1
+        recipient_display.setdefault(recipient_key, recipient)
 
-    if len(recipient_keys) <= 1:
-        return pd.DataFrame()
+    if not recipient_counts:
+        return "", pd.DataFrame()
 
-    return pd.DataFrame(details)
+    expected_key, _ = recipient_counts.most_common(1)[0]
+    expected_recipient = recipient_display.get(expected_key, "")
+
+    warning_rows = []
+
+    for row in rows:
+        recipient = str(row.get("Do", "")).strip()
+        recipient_key = normalize_text(recipient)
+
+        if not recipient_key:
+            recipient_key = "__empty__"
+            recipient = "(brak adresata)"
+
+        if recipient_key == expected_key:
+            row["_recipient_ok"] = "TAK"
+        else:
+            row["_recipient_ok"] = "NIE"
+            warning_rows.append({
+                "Godzina": row.get("Godzina", ""),
+                "Temat": row.get("Temat", ""),
+                "Adresat": recipient,
+                "Oczekiwany adresat": expected_recipient,
+            })
+
+    return expected_recipient, pd.DataFrame(warning_rows)
 
 
 
@@ -531,23 +554,24 @@ def build_warning_summary_df(
             })
 
     if recipient_warning_df is not None and not recipient_warning_df.empty:
-        occurrences = []
         for _, row in recipient_warning_df.iterrows():
-            base = format_occurrence_time_subject(row.get("Godzina", ""), row.get("Temat", ""))
+            subject = str(row.get("Temat", "")).strip()
+            base = format_occurrence_time_subject(row.get("Godzina", ""), subject)
             recipient = str(row.get("Adresat", "")).strip()
-            if base and recipient:
-                occurrences.append(f"{base} — {recipient}")
-            elif recipient:
-                occurrences.append(recipient)
-            elif base:
-                occurrences.append(base)
+            expected_recipient = str(row.get("Oczekiwany adresat", "")).strip()
 
-        warning_rows.append({
-            "Ocena": "Różny adresat",
-            "Element": "Adresat wiadomości",
-            "Wystąpienia": "; ".join(occurrences),
-            "Uwagi": "W pobranych wiadomościach wykryto więcej niż jednego adresata. Adresat powinien być stały.",
-        })
+            occurrence_parts = []
+            if base:
+                occurrence_parts.append(base)
+            if recipient:
+                occurrence_parts.append(f"adresat: {recipient}")
+
+            warning_rows.append({
+                "Ocena": "Błędny adresat",
+                "Element": subject or "Adresat wiadomości",
+                "Wystąpienia": " — ".join(occurrence_parts),
+                "Uwagi": f"Wiadomość wysłano na inny adres niż {expected_recipient}. Nie została zaliczona jako prawidłowa.",
+            })
 
     if debug_df is not None and not debug_df.empty:
         for _, row in debug_df.iterrows():
@@ -793,36 +817,27 @@ def build_names_report(base_items, mail_rows):
 
         if exact_found:
             status = "OK"
-            uwagi = "Znaleziono pełną nazwę po normalizacji."
+            uwagi = "Znaleziono nazwę"
         elif alias_found:
             status = "OK alias"
-            uwagi = f"Znaleziono dopuszczalny alias: {used_alias}"
+            uwagi = "Znaleziono alias"
         elif (
             best_score >= 90
             and best_msg
             and has_safe_token_match(best_match_text, best_msg["raw"], min_score=88)
         ):
             status = "OK z błędem"
-            uwagi = (
-                "Bardzo podobny zapis nazwy lub aliasu — prawdopodobnie literówka, "
-                "skrót albo brak polskich znaków."
-            )
+            uwagi = "Prawdopodobna literówka"
         elif (
             best_score >= 75
             and best_msg
             and has_safe_token_match(best_match_text, best_msg["raw"], min_score=88)
         ):
             status = "DO WERYFIKACJI"
-            uwagi = (
-                "Znaleziono podobny zapis nazwy lub aliasu, ale wymaga ręcznego "
-                "potwierdzenia."
-            )
+            uwagi = "Wymaga sprawdzenia"
         else:
             status = "BRAK"
-            uwagi = (
-                "Nie znaleziono wiarygodnego dopasowania albo podobieństwo wynikało "
-                "tylko z podobnej końcówki wyrazu."
-            )
+            uwagi = "Brak wiadomości"
 
         if best_msg and status != "BRAK":
             found_time = best_msg["godzina"]
@@ -850,6 +865,18 @@ def build_names_report(base_items, mail_rows):
         })
 
     return pd.DataFrame(report_rows)
+
+
+def style_report_status(row):
+    status = str(row.get("Status", ""))
+
+    if status == "BRAK":
+        return ["background-color: #4A1F25; color: #FFB3B3"] * len(row)
+
+    if status in ("OK z błędem", "DO WERYFIKACJI"):
+        return ["background-color: #4A3218; color: #FFCF8A"] * len(row)
+
+    return [""] * len(row)
 
 
 def set_morning_hours():
@@ -1136,19 +1163,24 @@ if pobierz_clicked:
             if not rows:
                 st.warning("Nie znaleziono wiadomości w wybranym zakresie godzin.")
             else:
-                rows, duplicate_messages_df = mark_duplicate_messages(rows)
-                rows, duplicate_attachments_df = mark_duplicate_attachments(rows)
+                expected_recipient, recipient_warning_df = mark_recipient_validity(rows)
+                valid_rows = [row for row in rows if row.get("_recipient_ok") != "NIE"]
+
+                valid_rows, duplicate_messages_df = mark_duplicate_messages(valid_rows)
+                valid_rows, duplicate_attachments_df = mark_duplicate_attachments(valid_rows)
 
                 df = pd.DataFrame(rows)
 
                 columns_to_hide_in_messages = [
                     "_attachment_names",
                     "Załącznik",
+                    "Do",
                     "Powtórzony załącznik",
                     "Powtórzone nazwy załączników",
                     "Podejrzenie duplikatu wiadomości",
                     "Grupa duplikatu",
                     "_duplicate_message_key",
+                    "_recipient_ok",
                 ]
 
                 df = df.drop(
@@ -1158,15 +1190,14 @@ if pobierz_clicked:
                 df.insert(0, "Lp.", range(1, len(df) + 1))
 
 
-                report_df = build_names_report(base_items, rows)
+                report_df = build_names_report(base_items, valid_rows)
 
                 report_display_columns = [
                     "Lp.",
+                    "Status",
                     "Nazwa wymagana",
                     "Alias",
-                    "Dopasowano przez",
                     "Uwagi",
-                    "Status",
                 ]
 
                 report_display_df = report_df[report_display_columns].copy()
@@ -1222,7 +1253,6 @@ if pobierz_clicked:
                 </div>
                 """, unsafe_allow_html=True)
 
-                recipient_warning_df = build_recipient_warning_df(rows)
                 warning_df = build_warning_summary_df(
                     duplicate_attachments_df,
                     duplicate_messages_df,
@@ -1232,7 +1262,7 @@ if pobierz_clicked:
 
                 warning_items = []
                 if not recipient_warning_df.empty:
-                    warning_items.append(f"różni adresaci wiadomości: {len(recipient_warning_df)} wpisów")
+                    warning_items.append(f"błędny adresat: {len(recipient_warning_df)} wpisów")
                 if not duplicate_attachments_df.empty:
                     warning_items.append(f"powtórzone nazwy załączników: {len(duplicate_attachments_df)}")
                 if not duplicate_messages_df.empty:
@@ -1241,6 +1271,14 @@ if pobierz_clicked:
                     warning_items.append(f"problemy techniczne IMAP: {len(debug_df)}")
 
                 with st.expander("Wczytane wiadomości"):
+                    if recipient_warning_df.empty:
+                        st.caption(f"Wszystkie wiadomości wysłano na adres: {expected_recipient}")
+                    else:
+                        st.warning(
+                            f"Adres podstawowy: {expected_recipient}. "
+                            "Wykryto wiadomości wysłane na inny adres — nie zostały zaliczone jako prawidłowe."
+                        )
+
                     st.dataframe(
                         df,
                         use_container_width=True,
@@ -1249,7 +1287,6 @@ if pobierz_clicked:
                             "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
                             "Data": st.column_config.TextColumn("Data", width="small"),
                             "Godzina": st.column_config.TextColumn("Godzina", width="small"),
-                            "Do": st.column_config.TextColumn("Do", width="medium"),
                             "Temat": st.column_config.TextColumn("Temat", width="large"),
                             "Zdjęcie": st.column_config.TextColumn("Zdjęcie", width="small"),
                             "Załączniki": st.column_config.TextColumn("Załączniki", width="large"),
@@ -1258,16 +1295,15 @@ if pobierz_clicked:
 
                 with st.expander("Raport zgodności"):
                     st.dataframe(
-                        report_display_df,
+                        report_display_df.style.apply(style_report_status, axis=1),
                         use_container_width=True,
                         hide_index=True,
                         column_config={
                             "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
                             "Pozycja z bazy": st.column_config.TextColumn("Pozycja z bazy", width="large"),
                             "Alias": st.column_config.TextColumn("Alias", width="large"),
-                            "Dopasowano przez": st.column_config.TextColumn("Dopasowano przez", width="medium"),
-                            "Uwagi": st.column_config.TextColumn("Uwagi", width="medium"),
-                            "Status": st.column_config.TextColumn("Status", width="small"),
+                            "Uwagi": st.column_config.TextColumn("Uwagi", width="large"),
                         },
                     )
 
@@ -1292,7 +1328,18 @@ if pobierz_clicked:
                     """, unsafe_allow_html=True)
 
                     with st.expander("Ostrzeżenia"):
-                        st.dataframe(warning_df, use_container_width=True, hide_index=True)
+                        st.dataframe(
+                            warning_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Lp.": st.column_config.NumberColumn("Lp.", width="small"),
+                                "Ocena": st.column_config.TextColumn("Ocena", width="medium"),
+                                "Element": st.column_config.TextColumn("Element", width="large"),
+                                "Wystąpienia": st.column_config.TextColumn("Wystąpienia", width="large"),
+                                "Uwagi": st.column_config.TextColumn("Uwagi", width="large"),
+                            },
+                        )
 
 
         except imaplib.IMAP4.error as e:
