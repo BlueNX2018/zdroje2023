@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-imap-smartfetch-duplicates"
+APP_VERSION = "2026-09-30-imap-smartfetch-duplicates-details"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -250,9 +250,16 @@ def mark_duplicate_attachments(rows):
     """
     Oznacza wiadomości zawierające powtarzające się nazwy załączników.
     Sprawdzamy wyłącznie nazwy plików odczytane z BODYSTRUCTURE, bez pobierania załączników.
+
+    Dodatkowo tworzy tabelę szczegółową: nazwa załącznika, liczba wystąpień,
+    godziny wysłania oraz tematy wiadomości, w których dana nazwa wystąpiła.
+    Dzięki temu łatwiej rozróżnić:
+    - powtórnie wysłaną tę samą wiadomość,
+    - pomyłkowe dołączenie tego samego pliku do innej wiadomości.
     """
     attachment_counts = Counter()
     attachment_display_names = {}
+    attachment_occurrences = {}
 
     for row in rows:
         for filename in row.get("_attachment_names", []):
@@ -264,6 +271,13 @@ def mark_duplicate_attachments(rows):
 
             attachment_counts[key] += 1
             attachment_display_names.setdefault(key, clean_name)
+
+            occurrence = {
+                "Godzina": row.get("Godzina", ""),
+                "Temat": row.get("Temat", ""),
+                "Do": row.get("Do", ""),
+            }
+            attachment_occurrences.setdefault(key, []).append(occurrence)
 
     duplicate_keys = {
         key
@@ -284,16 +298,46 @@ def mark_duplicate_attachments(rows):
         row["Powtórzony załącznik"] = "TAK" if duplicate_names else "NIE"
         row["Powtórzone nazwy załączników"] = ", ".join(duplicate_names)
 
-    duplicate_rows = [
-        {
+    duplicate_rows = []
+
+    for key in sorted(duplicate_keys, key=lambda item: attachment_display_names[item].casefold()):
+        occurrences = attachment_occurrences.get(key, [])
+
+        hours = []
+        subjects = []
+        details = []
+
+        for occurrence in occurrences:
+            hour = str(occurrence.get("Godzina", "")).strip()
+            subject = str(occurrence.get("Temat", "")).strip()
+            recipient = str(occurrence.get("Do", "")).strip()
+
+            if hour:
+                hours.append(hour)
+
+            if subject and subject not in subjects:
+                subjects.append(subject)
+
+            detail_parts = []
+            if hour:
+                detail_parts.append(hour)
+            if subject:
+                detail_parts.append(subject)
+            if recipient:
+                detail_parts.append(f"Do: {recipient}")
+
+            if detail_parts:
+                details.append(" — ".join(detail_parts))
+
+        duplicate_rows.append({
             "Nazwa załącznika": attachment_display_names[key],
             "Liczba wystąpień": attachment_counts[key],
-        }
-        for key in sorted(duplicate_keys, key=lambda item: attachment_display_names[item].casefold())
-    ]
+            "Godziny wysłania": ", ".join(hours),
+            "Tematy wiadomości": "; ".join(subjects),
+            "Wystąpienia szczegółowo": "; ".join(details),
+        })
 
     return rows, pd.DataFrame(duplicate_rows)
-
 
 def make_message_duplicate_key(row):
     """
