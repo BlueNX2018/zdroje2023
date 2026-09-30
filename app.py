@@ -15,12 +15,13 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-09-30-uid-retry"
+APP_VERSION = "2026-09-30-imap-smartfetch"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
 MAILBOX = "Sent"
 BASE_FILE = Path("baza_nazw_alias.csv")
+
 
 IMAP_MONTHS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -32,152 +33,122 @@ def format_imap_date(date_value):
     return f"{date_value.day:02d}-{IMAP_MONTHS[date_value.month - 1]}-{date_value.year}"
 
 
-
-def chunked(items, size):
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
-
-
 def bytes_to_text(value):
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
 
 
-def extract_uid_from_meta(meta):
-    meta_text = bytes_to_text(meta)
-    match = re.search(r"\bUID\s+(\d+)\b", meta_text, flags=re.IGNORECASE)
-    if match:
-        return match.group(1)
-    return ""
+def response_contains_header(content):
+    if not isinstance(content, bytes) or not content.strip():
+        return False
+
+    upper = content.upper()
+    return (
+        b"DATE:" in upper
+        or b"SUBJECT:" in upper
+        or b"TO:" in upper
+        or b"FROM:" in upper
+        or b"MESSAGE-ID:" in upper
+    )
 
 
-def fetch_headers_and_bodystructures(mail, uids, batch_size=25):
+def extract_first_header_from_response(msg_data):
+    if not msg_data:
+        return b""
+
+    for item in msg_data:
+        if isinstance(item, tuple):
+            content = item[1]
+            if response_contains_header(content):
+                return content
+
+    return b""
+
+
+def fetch_header_attempts(mail, uid):
     """
-    Pobiera nagłówki i BODYSTRUCTURE partiami, żeby nie wykonywać
-    osobnego FETCH dla każdej wiadomości. To jest łagodniejsze dla IMAP o2
-    i powinno ograniczyć przypadki losowego braku nagłówka.
+    Pobiera sam nagłówek wiadomości kilkoma metodami.
+    Używane najpierw szybko dla wszystkich UID, a awaryjnie tylko dla brakujących.
+    Nie pobiera załączników.
     """
-    header_map = {}
-    body_map = {}
-    fetch_status_map = {}
-
-    for batch in chunked(uids, batch_size):
-        uid_set = b",".join(batch)
-        status, data = mail.uid(
-            "FETCH",
-            uid_set,
-            "(UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)"
-        )
-
-        for uid in batch:
-            uid_text = bytes_to_text(uid)
-            fetch_status_map[uid_text] = status
-            body_map.setdefault(uid_text, [])
-
-        if status != "OK":
-            continue
-
-        current_uid = ""
-
-        for item in data:
-            if isinstance(item, tuple):
-                meta, content = item
-                uid_text = extract_uid_from_meta(meta)
-                if uid_text:
-                    current_uid = uid_text
-                    body_map.setdefault(current_uid, [])
-                    body_map[current_uid].append(bytes_to_text(meta))
-
-                if current_uid and isinstance(content, bytes):
-                    if (
-                        b"DATE:" in content.upper()
-                        or b"SUBJECT:" in content.upper()
-                        or b"TO:" in content.upper()
-                    ):
-                        header_map[current_uid] = content
-                    else:
-                        body_map.setdefault(current_uid, [])
-                        body_map[current_uid].append(bytes_to_text(content))
-
-            else:
-                # W odpowiedzi IMAP BODYSTRUCTURE bywa zwracane jako osobny element
-                # po nagłówku; dopisujemy go do ostatnio rozpoznanego UID.
-                if current_uid:
-                    body_map.setdefault(current_uid, [])
-                    body_map[current_uid].append(bytes_to_text(item))
-
-    return header_map, body_map, fetch_status_map
-
-
-def fetch_header_fallback(mail, uid):
-    """
-    Awaryjnie pobiera nagłówek pojedynczej wiadomości.
-    Używane tylko dla UID, dla których zbiorczy FETCH nie zwrócił nagłówka.
-    Nie pobiera pełnej treści wiadomości ani załączników.
-    """
-    uid_text = bytes_to_text(uid)
     attempts = [
-        "(UID RFC822.HEADER BODYSTRUCTURE)",
-        "(UID BODY.PEEK[HEADER] BODYSTRUCTURE)",
-        "(UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)",
+        ("RFC822.HEADER", "(UID RFC822.HEADER)"),
+        ("BODY.PEEK[HEADER]", "(UID BODY.PEEK[HEADER])"),
+        ("HEADER.FIELDS", "(UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)])"),
+        ("PARTIAL 64KB", "(UID BODY.PEEK[]<0.65536>)"),
     ]
 
-    collected_bodystructure = []
     last_status = ""
+    last_method = ""
     last_error = ""
 
-    for query in attempts:
+    for method_name, query in attempts:
         try:
-            status, data = mail.uid("FETCH", uid, query)
+            status, msg_data = mail.uid("FETCH", uid, query)
         except Exception as exc:
             last_error = str(exc)
             continue
 
         last_status = status
+        last_method = method_name
 
         if status != "OK":
             continue
 
-        fallback_header = b""
-        current_uid = uid_text
+        header_bytes = extract_first_header_from_response(msg_data)
+        if header_bytes:
+            return header_bytes, last_status, method_name, ""
 
-        for item in data:
-            if isinstance(item, tuple):
-                meta, content = item
-                meta_text = bytes_to_text(meta)
-                collected_bodystructure.append(meta_text)
+    return b"", last_status, last_method, last_error or "brak nagłówka"
 
-                # Jeśli serwer zwrócił inny UID w meta, używamy go tylko pomocniczo.
-                meta_uid = extract_uid_from_meta(meta)
-                if meta_uid:
-                    current_uid = meta_uid
 
-                if isinstance(content, bytes):
-                    content_upper = content.upper()
+def fetch_header_with_reconnect(uid, login, password):
+    """
+    Ostatnia próba dla problemowego UID: nowe połączenie IMAP i ponowny FETCH.
+    Uruchamiana tylko dla wiadomości, które nie dały nagłówka w głównym połączeniu.
+    """
+    try:
+        retry_mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        retry_mail.login(login, password)
+        status, _ = retry_mail.select(MAILBOX, readonly=True)
 
-                    # Przyjmujemy każdy zwrot wyglądający jak nagłówek RFC822,
-                    # a nie tylko taki, który zawiera konkretne pole DATE/SUBJECT/TO.
-                    if (
-                        b"\n" in content
-                        and (
-                            b":" in content
-                            or b"DATE" in content_upper
-                            or b"SUBJECT" in content_upper
-                            or b"FROM" in content_upper
-                            or b"TO" in content_upper
-                        )
-                    ):
-                        fallback_header = content
-                    else:
-                        collected_bodystructure.append(bytes_to_text(content))
-            else:
-                collected_bodystructure.append(bytes_to_text(item))
+        if status != "OK":
+            retry_mail.logout()
+            return b"", status, "reconnect select", "nie udało się otworzyć folderu"
 
-        if fallback_header:
-            return fallback_header, " ".join(collected_bodystructure), last_status, "OK fallback"
+        header_bytes, fetch_status, method, error = fetch_header_attempts(retry_mail, uid)
+        retry_mail.logout()
+        return header_bytes, fetch_status, f"reconnect: {method}", error
 
-    return b"", " ".join(collected_bodystructure), last_status, last_error or "brak nagłówka po fallback"
+    except Exception as exc:
+        return b"", "ERROR", "reconnect", str(exc)
+
+
+def fetch_bodystructure(mail, uid):
+    """
+    Pobiera BODYSTRUCTURE dopiero dla wiadomości, które przeszły filtr daty/godziny.
+    Dzięki temu nie spowalniamy sprawdzania wiadomości spoza zakresu.
+    """
+    try:
+        status, msg_data = mail.uid("FETCH", uid, "(UID BODYSTRUCTURE)")
+    except Exception as exc:
+        return "", "ERROR", str(exc)
+
+    if status != "OK":
+        return "", status, ""
+
+    parts = []
+
+    for item in msg_data:
+        if isinstance(item, tuple):
+            meta, content = item
+            parts.append(bytes_to_text(meta))
+            parts.append(bytes_to_text(content))
+        else:
+            parts.append(bytes_to_text(item))
+
+    return " ".join(parts), status, ""
 
 def decode_mime_header(value):
     if not value:
@@ -665,7 +636,6 @@ if st.button("Pobierz wysłane wiadomości"):
                 imap_to = format_imap_date(search_to)
 
                 search_query = f'(SINCE {imap_from} BEFORE {imap_to})'
-
                 status, data = mail.uid("SEARCH", None, search_query)
 
                 if status != "OK":
@@ -681,24 +651,35 @@ if st.button("Pobierz wysłane wiadomości"):
                 )
 
                 rows = []
-                debug_rows = []
+                technical_debug_rows = []
+                skipped_by_date_or_time = 0
 
                 if message_ids:
-                    with st.spinner("Pobieranie nagłówków wiadomości partiami..."):
-                        header_map, body_map, fetch_status_map = fetch_headers_and_bodystructures(
-                            mail,
-                            message_ids,
-                            batch_size=25,
-                        )
-
                     progress = st.progress(0)
 
                     for idx, uid in enumerate(message_ids, start=1):
                         progress.progress(idx / len(message_ids))
 
                         uid_text = bytes_to_text(uid)
-                        header_bytes = header_map.get(uid_text, b"")
-                        bodystructure_text = " ".join(body_map.get(uid_text, []))
+
+                        header_bytes, fetch_status, fetch_method, fetch_error = fetch_header_attempts(mail, uid)
+
+                        if not header_bytes:
+                            header_bytes, fetch_status, fetch_method, fetch_error = fetch_header_with_reconnect(
+                                uid,
+                                login,
+                                haslo,
+                            )
+
+                        if not header_bytes:
+                            technical_debug_rows.append({
+                                "UID": uid_text,
+                                "Status FETCH": fetch_status,
+                                "Metoda": fetch_method,
+                                "Problem": fetch_error,
+                                "Decyzja": "Pominięto: wiadomość nieodczytana przez IMAP",
+                            })
+                            continue
 
                         msg = email.message_from_bytes(header_bytes)
 
@@ -721,73 +702,35 @@ if st.button("Pobierz wysłane wiadomości"):
                             msg_time = dt_local.time().replace(microsecond=0)
 
                         except Exception:
-                            msg_date = None
-                            msg_time = None
-
-                        if not header_bytes:
-                            fallback_header, fallback_bodystructure, fallback_status, fallback_info = fetch_header_fallback(mail, uid)
-
-                            if fallback_header:
-                                header_bytes = fallback_header
-                                if fallback_bodystructure:
-                                    bodystructure_text = (bodystructure_text + " " + fallback_bodystructure).strip()
-
-                                msg = email.message_from_bytes(header_bytes)
-                                subject = decode_mime_header(msg.get("Subject", ""))
-                                sender = decode_mime_header(msg.get("From", ""))
-                                recipients = decode_mime_header(msg.get("To", ""))
-                                date_raw = msg.get("Date", "")
-
-                                try:
-                                    dt = parsedate_to_datetime(date_raw)
-
-                                    warsaw_tz = ZoneInfo("Europe/Warsaw")
-
-                                    if dt.tzinfo is not None:
-                                        dt_local = dt.astimezone(warsaw_tz)
-                                    else:
-                                        dt_local = dt.replace(tzinfo=warsaw_tz)
-
-                                    msg_date = dt_local.date()
-                                    msg_time = dt_local.time().replace(microsecond=0)
-
-                                except Exception:
-                                    msg_date = None
-                                    msg_time = None
-                            else:
-                                debug_rows.append({
-                                    "UID": uid_text,
-                                    "Status FETCH": fetch_status_map.get(uid_text, ""),
-                                    "Status fallback": fallback_status,
-                                    "Decyzja": f"Pominięto: brak nagłówka z IMAP także po fallback ({fallback_info})",
-                                })
-                                continue
-
-                        if msg_date is None or msg_time is None:
-                            debug_rows.append({
+                            technical_debug_rows.append({
                                 "UID": uid_text,
-                                "Status FETCH": fetch_status_map.get(uid_text, ""),
-                                "Decyzja": "Pominięto: brak daty/godziny",
+                                "Status FETCH": fetch_status,
+                                "Metoda": fetch_method,
+                                "Problem": f"Nie udało się odczytać daty z nagłówka: {date_raw}",
+                                "Decyzja": "Pominięto: brak poprawnej daty/godziny",
                             })
                             continue
 
                         if msg_date != selected_date:
-                            debug_rows.append({
-                                "UID": uid_text,
-                                "Status FETCH": fetch_status_map.get(uid_text, ""),
-                                "Decyzja": f"Pominięto: inna data ({msg_date})",
-                            })
+                            skipped_by_date_or_time += 1
                             continue
 
                         in_range = start_time <= msg_time <= end_time
 
                         if not in_range:
-                            debug_rows.append({
-                                "UID": uid_text,
-                                "Status FETCH": fetch_status_map.get(uid_text, ""),
-                                "Decyzja": f"Pominięto: poza godzinami ({msg_time})",
-                            })
+                            skipped_by_date_or_time += 1
                             continue
+
+                        bodystructure_text, body_status, body_error = fetch_bodystructure(mail, uid)
+
+                        if body_status != "OK":
+                            technical_debug_rows.append({
+                                "UID": uid_text,
+                                "Status FETCH": body_status,
+                                "Metoda": "BODYSTRUCTURE",
+                                "Problem": body_error or "nie udało się pobrać BODYSTRUCTURE",
+                                "Decyzja": "Wiadomość dodana, ale bez danych o załącznikach",
+                            })
 
                         attachments, has_attachment, has_image = analyze_bodystructure(
                             bodystructure_text
@@ -815,10 +758,20 @@ if st.button("Pobierz wysłane wiadomości"):
                             # "Liczba rozpoznanych nazw załączników": len(attachments),
                         })
 
-                if debug_rows:
-                    debug_df = pd.DataFrame(debug_rows)
-                    with st.expander("Diagnostyka pominiętych wiadomości"):
+                if technical_debug_rows:
+                    debug_df = pd.DataFrame(technical_debug_rows)
+                    with st.expander("Diagnostyka techniczna IMAP"):
+                        st.warning(
+                            "Części wiadomości nie udało się w pełni odczytać przez IMAP. "
+                            "Jeżeli pojawia się FETCH: NO także po ponownym połączeniu, problem jest po stronie serwera poczty albo konkretnej wiadomości."
+                        )
                         st.dataframe(debug_df, use_container_width=True)
+
+                if skipped_by_date_or_time:
+                    st.caption(
+                        f"Pominięto {skipped_by_date_or_time} wiadomości z szerszego zakresu IMAP, "
+                        "bo miały inną datę albo godzinę poza wybranym zakresem."
+                    )
 
                 mail.logout()
 
