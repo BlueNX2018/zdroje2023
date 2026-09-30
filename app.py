@@ -5,7 +5,7 @@ import unicodedata
 from pathlib import Path
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
-from datetime import time
+from datetime import time, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -15,12 +15,21 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-08-10-2315"
+APP_VERSION = "2026-09-30-uid-fix"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
 MAILBOX = "Sent"
 BASE_FILE = Path("baza_nazw_alias.csv")
+
+IMAP_MONTHS = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+]
+
+
+def format_imap_date(date_value):
+    return f"{date_value.day:02d}-{IMAP_MONTHS[date_value.month - 1]}-{date_value.year}"
 
 def decode_mime_header(value):
     if not value:
@@ -501,8 +510,15 @@ if st.button("Pobierz wysłane wiadomości"):
                     mail.logout()
                     st.stop()
 
-                imap_date = selected_date.strftime("%d-%b-%Y")
-                status, data = mail.search(None, f'ON "{imap_date}"')
+                search_from = selected_date - timedelta(days=1)
+                search_to = selected_date + timedelta(days=2)
+
+                imap_from = format_imap_date(search_from)
+                imap_to = format_imap_date(search_to)
+
+                search_query = f'(SINCE {imap_from} BEFORE {imap_to})'
+
+                status, data = mail.uid("SEARCH", None, search_query)
 
                 if status != "OK":
                     st.error("Nie udało się wyszukać wiadomości.")
@@ -512,8 +528,8 @@ if st.button("Pobierz wysłane wiadomości"):
                 message_ids = data[0].split()
 
                 st.info(
-                    f"Znaleziono wiadomości dla daty {selected_date}: {len(message_ids)}. "
-                    f"Do tabeli trafią tylko wiadomości z godzin {start_time}–{end_time}."
+                    f"Znaleziono wiadomości w szerszym zakresie IMAP {imap_from}–{imap_to}: {len(message_ids)}. "
+                    f"Do tabeli trafią tylko wiadomości z dnia {selected_date} i godzin {start_time}–{end_time}."
                 )
 
                 rows = []
@@ -521,14 +537,14 @@ if st.button("Pobierz wysłane wiadomości"):
                 if message_ids:
                     progress = st.progress(0)
 
-                    for idx, num in enumerate(message_ids, start=1):
+                    for idx, uid in enumerate(message_ids, start=1):
                         progress.progress(idx / len(message_ids))
 
                         fetch_query = (
                             '(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT)] BODYSTRUCTURE)'
                         )
 
-                        status, msg_data = mail.fetch(num, fetch_query)
+                        status, msg_data = mail.uid("FETCH", uid, fetch_query)
 
                         if status != "OK":
                             continue
@@ -590,7 +606,10 @@ if st.button("Pobierz wysłane wiadomości"):
                             msg_date = None
                             msg_time = None
 
-                        if msg_time is None:
+                        if msg_date is None or msg_time is None:
+                            continue
+
+                        if msg_date != selected_date:
                             continue
 
                         in_range = start_time <= msg_time <= end_time
