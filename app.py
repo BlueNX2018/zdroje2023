@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 st.set_page_config(page_title="Kontrola maili", layout="wide")
 
-APP_VERSION = "2026-10-01-imap-sf-c20"
+APP_VERSION = "2026-10-08-imap-smartfetch-fast"
 
 IMAP_SERVER = "poczta.o2.pl"
 IMAP_PORT = 993
@@ -1260,13 +1260,12 @@ if pobierz_clicked:
                 mail.logout()
                 st.stop()
 
-            search_from = selected_date - timedelta(days=1)
-            search_to = selected_date + timedelta(days=2)
+            # Tryb szybki: pobieramy wyłącznie wiadomości z wybranej daty.
+            # Filtrowanie po godzinach zostaje w kodzie po odczycie nagłówka wiadomości.
+            # Nie pobieramy już dnia poprzedniego i następnego, bo o2 IMAP działa stabilnie.
+            imap_date = format_imap_date(selected_date)
 
-            imap_from = format_imap_date(search_from)
-            imap_to = format_imap_date(search_to)
-
-            search_query = f'(SINCE {imap_from} BEFORE {imap_to})'
+            search_query = f'(ON {imap_date})'
             status, data = mail.uid("SEARCH", None, search_query)
 
             if status != "OK":
